@@ -2,7 +2,7 @@
 
 # Bitonic sort is a algorithm used for parallel-friendly device such as GPU.
 # Number of pass: T(n) = 1 + 2 + ... + log(n) = O(log(n) ** 2)
-# Computation complexity: O(n * log(n) ** 2)
+# Computation complexity: O( n*log^2(n) )
 # Reference
 # https://developer.nvidia.com/gpugems/gpugems2/part-vi-simulation-and-numerical-algorithms/chapter-46-improved-gpu-sorting
 
@@ -53,16 +53,50 @@ def bitonic_sort(array: List, descending: bool = False):
             dir_ = DIR(not dir_.value)
 
 
-def test_bitonic_sort(array_length=32, test_loop=10):
+def bitonic_merge_array(array: List, start: int, end: int, direction: DIR):
+    length = end - start + 1
+    if length == 1:
+        return
+
+    step = length // 2
+    mid = start + step - 1  # mid is also (start + end) // 2, like in `bitonic_sort_array`
+    for i in range(start, start + step):
+        swap_by_direction(array, i, i + step, direction)
+    bitonic_merge_array(array, start, mid, direction)
+    bitonic_merge_array(array, mid + 1, end, direction)
+
+
+def bitonic_sort_array(array: List, start: int, end: int, direction: DIR):
+    length = end - start + 1
+    if length == 1:
+        return
+
+    mid = (start + end) // 2
+    bitonic_sort_array(array, start, mid, direction)
+    bitonic_sort_array(array, mid + 1, end, DIR(not direction.value))
+    bitonic_merge_array(array, start, end, direction)
+
+
+def bitonic_sort_algo(array: List, descending: bool = False):
+    # most used implementment of bitonic sort
+    length = len(array)
+    stages = math.ceil(math.log2(length))
+    assert length == 2 ** stages, f"only power of 2 length is supported, get {length}"
+    dir_ = DIR.DOWN if descending else DIR.UP
+    bitonic_sort_array(array, 0, length - 1, dir_)
+
+
+def test_bitonic_sort(array_length=32, test_loop=10, algo=bitonic_sort):
     array = list(range(array_length))
     for _ in range(test_loop):
         copy_array = array.copy()
         random.shuffle(copy_array)
         prev_val = copy_array.copy()
-        bitonic_sort(copy_array)
+        algo(copy_array)
         assert copy_array == array, f"bitonic_sort failed at {prev_val}"
-    print("bitonic_sort passed.")
+    print(f"{algo.__name__} passed.")
 
 
 if __name__ == "__main__":
     test_bitonic_sort(test_loop=100)
+    test_bitonic_sort(test_loop=100, algo=bitonic_sort_algo)
