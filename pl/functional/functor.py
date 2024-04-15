@@ -8,6 +8,8 @@ from pytools.functional import compose, curry
 
 __all__ = [
     "Functor", "Maybe", "Either", "Left", "Right",
+    "either", "fmap", "identity", "left", "maybe", "join",
+    "chain", "traverse", "sequence",
 ]
 
 
@@ -32,6 +34,18 @@ class Functor:
     def chain(self, func):
         return self.map(func).join()
 
+    def sequence(self, of):
+        return self.traverse(of, identity)
+
+    def traverse(self, of, func):
+        if isinstance(self.value, list):
+            return [self.of(x) for x in func(self.value)]
+        else:  # Fnnctor type
+            return func(self.value).map(type(self).of)
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self.value})"
+
 
 class Maybe(Functor):
     """A Maybe is a functor that might have no value."""
@@ -43,6 +57,14 @@ class Maybe(Functor):
 
     def join(self):
         return self if self.is_nothing else self.value
+
+    def traverse(self, of, func):
+        if self.is_nothing:
+            return of(self)
+        elif isinstance(self.value, list):
+            return [self.of(x) for x in func(self.value)]
+        else:
+            return func(self.value).map(type(self).of)
 
     @property
     def is_nothing(self):
@@ -66,6 +88,9 @@ class Left(Either):
     def of(cls, value):
         return cls(value=value)
 
+    def traverse(self, of, func):
+        return of(self)
+
 
 class Right(Either):
     """A Right is a functor that holds the right value."""
@@ -76,6 +101,17 @@ class Right(Either):
     @classmethod
     def of(cls, value):
         return cls(value=value)
+
+    def traverse(self, of, func):
+        if isinstance(self.value, list):
+            return [Either.of(x) for x in func(self.value)]
+        else:  # Fnnctor
+            return func(self.value).map(Either.of)
+
+
+class Identity(Functor):
+
+    pass
 
 
 @curry
@@ -112,8 +148,27 @@ def chain(func, functor):
     return functor.chain(func)
 
 
+@curry
+def traverse(of, func, functor):
+    if isinstance(functor, list):  # js Array has `map` method while python list does not
+        values = []
+        for x in functor:
+            values.append(func(x.value) if isinstance(x, Functor) else func(x))
+        return of(values)
+    return functor.traverse(of, func)
+
+
+@curry
+def sequence(of, functor):
+    return traverse(of, identity, functor)
+
+
 def identity(x):
     return x
+
+
+def maybe_to_either(x: Functor):
+    return Right.of(x.value) if x.value else Left()
 
 
 def test_associativity_law():
@@ -204,6 +259,43 @@ def test_composition_law():
     print("pass composition law!")
 
 
+def test_sequence():
+    values = [3, list(range(10)), "Hello world"]
+    types = [Functor, Maybe, Either]
+    for A in types:
+        assert sequence(A.of, [A.of(v) for v in values]) == A.of(values)
+        assert sequence(A.of, A.of(values)) == [A.of(v) for v in values]
+    print("pass sequence!")
+
+
+def test_traverse_flip():
+    value = 43
+    types = [Functor, Maybe, Either]
+
+    for A, B in itertools.product(types, types):
+        v = A.of(B.of(value))
+        assert sequence(B.of, v) == B.of(A.of(value))
+    print("pass traverse flip!")
+
+
+def test_traverse_identity():
+    identity1 = compose(sequence(Identity.of), fmap(Identity.of))
+    Identity2 = Identity.of
+
+    v = Either.of('stuff')
+    assert identity1(v) == Identity2(v)
+    print("pass traverse identity!")
+
+
+def test_traverse_natruality():
+    nat1 = lambda of, nt: compose(nt, sequence(of))  # noqa
+    nat2 = lambda of, nt: compose(sequence(of), fmap(nt))  # noqa
+
+    v = Identity.of(Maybe.of('barlow one'))
+    assert nat1(Maybe.of, maybe_to_either)(v) == nat2(Either.of, maybe_to_either)(v)
+    print("pass traverse natruality!")
+
+
 if __name__ == "__main__":
     test_associativity_law()
     test_identity_for_functor()
@@ -211,3 +303,7 @@ if __name__ == "__main__":
     test_homomorphism_law()
     test_interchange_law()
     test_composition_law()
+    test_sequence()
+    test_traverse_flip()
+    test_traverse_identity()
+    test_traverse_natruality()
