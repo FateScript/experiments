@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
 import ast
-import time
 import io
-from contextlib import redirect_stdout
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 from typing import List
 
 
