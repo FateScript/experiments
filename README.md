@@ -5,7 +5,7 @@
 
 Experiments is a repository housing small-scale projects, each serving to deepen my comprehension of various concepts.
 
-It spans across different `programming languages`, `algorithms`, `neural networks`, `software engineering`, and more.
+It spans across `programming languages`, `algorithms`, `neural networks`, `software engineering`, and more.
 
 Users might utilize these mini-projects for deliberate practice.
 
