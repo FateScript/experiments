@@ -21,7 +21,7 @@ def update_elo_rating(rating: float, game_result: int, win_prob: float, k: int =
     return max(rating + k * (game_result - win_prob), 0)
 
 
-def game(rating1, rating2, std: float = 300) -> int:
+def game(rating1: float, rating2: float, std: float = 300) -> int:
     """Return 1 if player1 wins, 0 otherwise.
     We assume the player's performance follows a normal distribution.
     The player wins the game if his/her performance is higher than the opponent's.
@@ -109,6 +109,29 @@ def player_converage_consider_history(
     return steps
 
 
+def two_players_converage(
+    loops: int = 1000, elo_k: int = 32,
+    a_win_b_prob: float = 0.75
+):
+    avg_rating = 1200.0
+    elo_score_a = 300.0
+    elo_score_b = 2 * avg_rating - elo_score_a
+
+    probs_to_plot = []
+    games = []
+    for _ in range(loops):
+        elo_prob = elo_win_prob(elo_score_a, elo_score_b)
+        probs_to_plot.append(elo_prob)
+        game_result = 1 if np.random.rand() < a_win_b_prob else 0
+        games.append(game_result)
+
+        elo_score_a = update_elo_rating(elo_score_a, game_result, elo_prob, k=elo_k)
+        elo_score_b = update_elo_rating(elo_score_b, 1 - game_result, 1 - elo_prob, k=elo_k)
+
+    print(f"P1: {elo_score_a: .3f}\tP2: {elo_score_b: .3f}\tWin prob: {np.mean(games): .3f}")
+    return probs_to_plot, elo_score_a, elo_score_b
+
+
 def plot(
     data: List[Tuple[List, List]],
     ratings: Optional[List] = None,
@@ -151,7 +174,34 @@ def plot(
     plt.show()
 
 
-def simulate(num_simulation: int = 2500):
+def plot_win_prob(probs: List[List[float]], true_prob: float, tags: Optional[List] = None):
+    colors = [
+        "blue", "green", "red", "cyan",
+        "magenta", "purple", "orange",
+    ]
+    for color, prob in zip(colors, probs):
+        x = list(range(len(prob)))
+        plt.plot(x, prob, color=color)
+
+    plt.axhline(y=true_prob, color="red", linestyle="--")
+
+    if tags:
+        plt.legend(tags, loc="upper right")
+
+    plt.title("Win probs of two players")
+    plt.xlabel("Turns")
+    plt.ylabel("Probs")
+
+    plt.savefig("prob.png")
+    plt.show()
+
+
+def simulate_system(num_simulation: int = 2500):
+    """
+    Simulate the player's rating convergence in an Elo system.
+    You will the number of players will affect the convergence
+    and the higher the player's rating, the slower the convergence.
+    """
     mean, std = 1200, 300
 
     std_sacles = [0.5, 1, 1.5, 2]
@@ -178,6 +228,11 @@ def simulate(num_simulation: int = 2500):
 
 
 def simulate_consider_history(num_simulation: int = 2500):
+    """
+    Simulate the player's rating convergence and considering the history game.
+    You will see that the convergence will be faster for all levels of playes compared to
+    the baseline, and the topper the player, the faster the convergence.
+    """
     mean, std = 1200, 300
 
     std_sacles = [0.5, 1, 1.5, 2]
@@ -205,12 +260,28 @@ def simulate_consider_history(num_simulation: int = 2500):
     plot(data, ratings=ratings_tag, line_style=True)
 
 
+def simulate_elo_k(num_simulation: int = 2500):
+    """
+    Simulate two players' battle and see how the Elo K value affects the convergence.
+    The larger the K value, the faster the convergence.
+    The smaller the K value, the more stable the convergence to the true winning prob.
+    """
+    elo_k_values = [1, 2, 4, 8, 16, 32]
+
+    win_prob = 0.75
+    probs_list = []
+    for elo_k in tqdm(elo_k_values):
+        probs, *_ = two_players_converage(num_simulation, elo_k=elo_k, a_win_b_prob=win_prob)
+        probs_list.append(probs)
+
+    tags = [f"Elo K = {x}" for x in elo_k_values]
+    plot_win_prob(probs_list, true_prob=win_prob, tags=tags)
+
+
 if __name__ == "__main__":
-    # to simulate the player's rating convergence in an Elo system.
-    # you will the number of players will affect the convergence
-    # and the higher the player's rating, the slower the convergence.
-    simulate()
-    # to simulate the player's rating convergence and considering the history.
-    # you will see that the convergence will be faster for all levels of players
-    # and the topper the player, the faster the convergence.
-    # simulate_consider_history()
+    import fire
+    fire.Fire({
+        "system": simulate_system,
+        "history": simulate_consider_history,
+        "elo_k": simulate_elo_k,
+    })
