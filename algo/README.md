@@ -8,6 +8,8 @@ algorithm is a collection of algorithm implementations.
 
 `sleep_sort.py` implements the sleep sort algorithm.
 
+`elo_rating.py` implements a simple Elo rating system and see how a player's rating converge.
+
 ### 🛠️ Execute
 
 Executing is simple: using `python3`/`python` command.
