@@ -4,6 +4,7 @@
 # Assume the player's performance follows a normal distribution in my simulation.
 # Reference: https://en.wikipedia.org/wiki/Elo_rating_system
 
+import functools
 from typing import List, Tuple, Optional
 from tqdm import tqdm
 import numpy as np
@@ -110,11 +111,27 @@ def player_converage_consider_history(
 
 
 def two_players_converage(
-    loops: int = 1000, elo_k: int = 32,
-    a_win_b_prob: float = 0.75
-):
-    avg_rating = 1200.0
-    elo_score_a = 300.0
+    loops: int = 1000,
+    elo_k: int = 32,
+    avg_rating: float = 1200,
+    player_a_rating: float = 300.0,
+    a_win_b_prob: float = 0.75,
+    verbose: bool = True,
+) -> Tuple[List[float], float, float]:
+    """
+    Simulate two players' battle.
+
+    Args:
+        loops (int): Number of simulations. Defaults to 1000.
+        elo_k (int): Elo K value. Defaults to 32.
+        avg_rating (float): Average rating. Defaults to 1200.
+        player_a_rating (float): Player A's rating. Defaults to 300.0.
+        a_win_b_prob (float): The true win prob(a win b). Defaults to 0.75.
+
+    Returns:
+        Tuple[List[float], float, float]: The win prob list, A's rating, B's rating.
+    """
+    elo_score_a = player_a_rating
     elo_score_b = 2 * avg_rating - elo_score_a
 
     probs_to_plot = []
@@ -128,7 +145,47 @@ def two_players_converage(
         elo_score_a = update_elo_rating(elo_score_a, game_result, elo_prob, k=elo_k)
         elo_score_b = update_elo_rating(elo_score_b, 1 - game_result, 1 - elo_prob, k=elo_k)
 
-    print(f"P1: {elo_score_a: .3f}\tP2: {elo_score_b: .3f}\tWin prob: {np.mean(games): .3f}")
+    if verbose:
+        print(f"P1: {elo_score_a: .3f}\tP2: {elo_score_b: .3f}\tWin prob: {np.mean(games): .3f}")
+    return probs_to_plot, elo_score_a, elo_score_b
+
+
+def two_players_converage_turns(
+    elo_k: int = 32,
+    avg_rating: float = 1200,
+    player_a_rating: float = 300.0,
+    a_win_b_prob: float = 0.75
+) -> Tuple[List[float], float, float]:
+    """
+    Simulate two players' battle until elo prob greater than true win prob.
+
+    Args:
+        loops (int): Number of simulations. Defaults to 1000.
+        elo_k (int): Elo K value. Defaults to 32.
+        avg_rating (float): Average rating. Defaults to 1200.
+        player_a_rating (float): Player A's rating. Defaults to 300.0.
+        a_win_b_prob (float): The true win prob(a win b). Defaults to 0.75.
+
+    Returns:
+        Tuple[List[float], float, float]: The win prob list, A's rating, B's rating.
+    """
+    elo_score_a = player_a_rating
+    elo_score_b = 2 * avg_rating - elo_score_a
+
+    probs_to_plot = []
+    games = []
+    while True:
+        elo_prob = elo_win_prob(elo_score_a, elo_score_b)
+        probs_to_plot.append(elo_prob)
+        if abs(elo_prob - a_win_b_prob) <= 0.01:
+            break
+
+        game_result = 1 if np.random.rand() < a_win_b_prob else 0
+        games.append(game_result)
+
+        elo_score_a = update_elo_rating(elo_score_a, game_result, elo_prob, k=elo_k)
+        elo_score_b = update_elo_rating(elo_score_b, 1 - game_result, 1 - elo_prob, k=elo_k)
+
     return probs_to_plot, elo_score_a, elo_score_b
 
 
@@ -260,22 +317,121 @@ def simulate_consider_history(num_simulation: int = 2500):
     plot(data, ratings=ratings_tag, line_style=True)
 
 
-def simulate_elo_k(num_simulation: int = 2500):
+def simulate_elo_k(
+    num_simulation: int = 2500,
+    win_prob: float = 0.75,
+    avg_rating: float = 1200.0,
+    rating_a: float = 300.0,
+):
     """
     Simulate two players' battle and see how the Elo K value affects the convergence.
-    The larger the K value, the faster the convergence.
-    The smaller the K value, the more stable the convergence to the true winning prob.
+    The two player have differnt start rating and the first player is the chanllenger.
+
+    Args:
+
+        num_simulation (int): Number of simulations. Defaults to 2500.
+        win_prob (float): The true win prob(a win b). Defaults to 0.75.
     """
     elo_k_values = [1, 2, 4, 8, 16, 32]
 
-    win_prob = 0.75
     probs_list = []
     for elo_k in tqdm(elo_k_values):
-        probs, *_ = two_players_converage(num_simulation, elo_k=elo_k, a_win_b_prob=win_prob)
+        probs, *_ = two_players_converage(
+            num_simulation,
+            elo_k=elo_k,
+            a_win_b_prob=win_prob,
+            avg_rating=avg_rating,
+            player_a_rating=rating_a,
+        )
         probs_list.append(probs)
 
+    # converage turns
+    surpass = [[x >= win_prob for x in prob] for prob in probs_list]
+    for turns, elo_k in zip(surpass, elo_k_values):
+        if True not in turns:
+            print(f"Elo K = {elo_k}\tNot surpass.")
+            continue
+        turn = turns.index(True)
+        print(f"Elo K = {elo_k}\tTurns to surpass: {turn}")
+
+    # plot image
     tags = [f"Elo K = {x}" for x in elo_k_values]
     plot_win_prob(probs_list, true_prob=win_prob, tags=tags)
+
+
+def simulate_elo_k_turns(
+    num_simulation: int = 1000,
+    win_prob: float = 0.75,
+    avg_rating: float = 1200.0,
+    rating_a: float = 300.0,
+):
+    """
+    Simulate two players' battle and see how many turns it takes under different Elo K value.
+    The two player have differnt start rating and the first player is the chanllenger.
+    """
+    elo_k_values = [1, 2, 4, 8, 16, 32]
+
+    turns_list, probs_list = [], []
+    for elo_k in tqdm(elo_k_values):
+        turns_count, last_probs = [], []
+        for _ in range(num_simulation):
+            probs, *_ = two_players_converage_turns(
+                elo_k=elo_k,
+                a_win_b_prob=win_prob,
+                avg_rating=avg_rating,
+                player_a_rating=rating_a,
+            )
+            last_probs.append(probs[-1])
+            turns_count.append(len(probs))
+
+        turns_list.append(turns_count)
+        probs_list.append(last_probs)
+
+    # converage turns
+    for elo_k, turns, probs in zip(elo_k_values, turns_list, probs_list):
+        avg_turns, std_turns = np.mean(turns), np.std(turns)
+        avg_probs = np.mean(probs)
+        print(f"Elo K = {elo_k}\tAvg Turns: {avg_turns: .2f}\t"
+              f"Std: {std_turns: .2f}\tConverge prob: {avg_probs: .3%}")
+
+
+def simulate_elo_k_prob_stats(
+    num_simulation: int = 1000,
+    num_games: int = 60,
+    win_prob: float = 0.75,
+    avg_rating: float = 1200.0,
+    rating_a: float = 300.0,
+):
+    """
+    Simulate two players' battle and the game end after `num_games` turns.
+    See the statistics of the win prob at different turns under different Elo K value.
+    """
+    elo_k_values = [1, 2, 4, 8, 16, 32]
+    inspect_turns = [20, 30, 40, 50, 60]
+
+    probs_list = []
+    for elo_k in tqdm(elo_k_values):
+        last_probs = []
+        for _ in range(num_simulation):
+            probs, *_ = two_players_converage(
+                num_games,
+                elo_k=elo_k,
+                a_win_b_prob=win_prob,
+                avg_rating=avg_rating,
+                player_a_rating=rating_a,
+                verbose=False,
+            )
+            inspect_prob = [probs[turn - 1] for turn in inspect_turns]
+            last_probs.append(inspect_prob)
+
+        probs_list.append(last_probs)
+
+    for elo_k, prob in zip(elo_k_values, probs_list):
+        prob_matrix = np.array(prob).transpose()
+        print(f"Elo K = {elo_k}")
+        for turn, array in zip(inspect_turns, prob_matrix):
+            prob_mean, prob_std = np.mean(array), np.std(array)
+            print(f"Turns: {turn}\tAvg prob: {prob_mean: .2%}\tStd: {prob_std: .2%}")
 
 
 if __name__ == "__main__":
@@ -284,4 +440,9 @@ if __name__ == "__main__":
         "system": simulate_system,
         "history": simulate_consider_history,
         "elo_k": simulate_elo_k,
+        "elo_k_same_rating": functools.partial(simulate_elo_k, rating_a=1200.0),
+        "elo_k_turns": simulate_elo_k_turns,  # how many turns to reach the true win prob.
+        "elo_k_turns_same_rating": functools.partial(simulate_elo_k_turns, rating_a=1200.0),
+        "elo_k_prob_stats": simulate_elo_k_prob_stats,  # statistics of the prob at different turns.
+        "elo_k_prob_stats_same_rating": functools.partial(simulate_elo_k_prob_stats, rating_a=1200.0),  # noqa
     })
