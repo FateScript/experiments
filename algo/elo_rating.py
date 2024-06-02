@@ -5,10 +5,11 @@
 # Reference: https://en.wikipedia.org/wiki/Elo_rating_system
 
 import functools
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 from tqdm import tqdm
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def elo_win_prob(rating1: float, rating2: float) -> float:
