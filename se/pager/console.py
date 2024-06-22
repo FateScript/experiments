@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
 import os
-import sys
-import tty
-import termios
 import select
+import sys
+import termios
+import tty
 
 ESC = "\x1b"  # ctrl + 3 also
 EOF = "\x04"  # unix (^D), for windows it's "\x1a" (^Z)
@@ -22,6 +22,22 @@ KEY_SUFFIX = {
     "S": "<PAGE-UP>",
     "T": "<PAGE-DOWN>",
 }
+
+
+def move_cursor(direction: str = "up", shift: int = 1):
+    """Move the cursor in the terminal."""
+    directions = {
+        'up': 'A',
+        'down': 'B',
+        'right': 'C',
+        'left': 'D'
+    }
+
+    if direction not in directions:
+        raise ValueError("Invalid direction. Use 'up', 'left', 'down', or 'right'.")
+
+    sys.stdout.write(ESC + f"[{shift}{directions[direction]}")
+    sys.stdout.flush()
 
 
 def getchar(num_bytes: int = 1) -> str:
