@@ -87,6 +87,10 @@ def get_press_key() -> str:
                 return f"<UNKNOWN: {next_char}>"
         elif char == EOF:
             return "<EOF>"
+        elif char == "\r":
+            return "<ENTER>"
+        elif char == "\t":
+            return "<TAB>"
 
         return char
     except Exception as e:
