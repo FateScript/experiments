@@ -14,7 +14,10 @@ Users might utilize these mini-projects for deliberate practice.
 Here is of my philosophy of building this project, hope it could help you to build your own repo.
 
 * The best way to understand a concept that you are not familiar with is to implement it. (纸上得来终觉浅，绝知此事要躬行)
-* Three steps to reinvent the wheel: 1. Find things you are curious about. 2. Redesign the core part. 3. Forget about it and move on.
+* Three steps to reinvent a wheel: 
+  * Find things you are curious about.  
+  * Redesign the core part.  
+  * Forget about it and move on.  
 * Do things with consistency. Learning one hour per day for ten days is better than learning ten hours in one day.
 * Less is more. Slow is fast.
 
