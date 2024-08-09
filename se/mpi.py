@@ -4,8 +4,9 @@
 # Reference: https://github.com/facebookincubator/gloo
 # See https://github.com/mpi4py/mpi4py if you want to use MPI in Python.
 
-import os
+import math
 import multiprocessing
+import os
 import time
 from typing import Callable, Dict
 
@@ -14,9 +15,12 @@ __all__ = [
     "get_world_size",
     "get_pipes",
     "barrier",
-    "gather", "scatter",
-    "broadcast", "all_gather",
-    "reduce", "all_reduce",
+    "broadcast",
+    "gather",
+    "scatter",
+    "all_gather",
+    "reduce",
+    "all_reduce",
 ]
 
 
@@ -88,6 +92,15 @@ def init_env(rank, world_size, queue, shared_mem, pipe_pairs):
     set_queue(queue)
     set_shared_mem(shared_mem)
     set_pipes(pipe_pairs)
+
+
+def virtual_rank(rank: int, source_rank: int, world_size: int) -> int:
+    # virtual rank is the rank value if the source rank is treated as rank 0
+    return (rank - source_rank) % world_size
+
+
+def original_rank(virtual_rank: int, source_rank: int, world_size: int) -> int:
+    return (virtual_rank + source_rank) % world_size
 
 
 def barrier():
@@ -211,7 +224,9 @@ def reduce(data, target_rank: int = 0, op: str = "sum"):
         return None
 
 
-def broadcast(data, source_rank: int = 0):
+def broadcast_p2p_version(data, source_rank: int = 0):
+    # A simplified version of broadcast using point-to-point communication
+    # The source rank sends data to all other ranks, O(n) time complexity
     rank = get_rank()
     world_size = get_world_size()
     queue = get_queue()
@@ -223,6 +238,37 @@ def broadcast(data, source_rank: int = 0):
     else:
         data = queue.get()
         return data
+
+
+def broadcast(data, source_rank: int = 0):
+    # Iterative halving/doubling algorithm for broadcast, O(log(n)) time complexity
+    # reference in gloo:
+    # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/broadcast.cc#L20
+    rank = get_rank()
+    world_size = get_world_size()
+    v_rank = (rank - source_rank) % world_size
+    pipes = get_pipes()
+
+    iterations = math.ceil(math.log2(world_size))
+
+    involved_rank = 1
+    for turn in range(iterations):
+        # 1st turn: rank0 -> rank1
+        # 2nd turn: rank0 -> rank2, rank1 -> rank3, and so on.
+        min_recv_rank = involved_rank  # 2 ** turn
+        involved_rank <<= 1
+        if v_rank < involved_rank:
+            is_send_rank = v_rank < min_recv_rank
+            v_peer_rank = (v_rank + min_recv_rank) % involved_rank  # (A, B) to comm, A's peer is B, B's peer is A
+            peer_rank = (v_peer_rank + source_rank) % world_size
+            if is_send_rank:
+                pipes[(rank, peer_rank)].send(data)
+            else:
+                data = pipes[(rank, peer_rank)].recv()
+        else:  # not involved in this turn
+            continue
+
+    return data
 
 
 def all_gather(data):
@@ -245,46 +291,105 @@ def ring_all_reduce(data):
     pass
 
 
-def worker(rank, world_size, queue, signal_queue, pipe_pairs):
-    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
-    source_rank = 0
+def mpi_frame(f, world_size: int = 4):
+    # import platform
+    # assert platform.system() == "Linux", "The script only works on Linux."
 
-    data = rank * 10
-    # data = [10 * x for x in range(world_size)] if rank == source_rank else None
+    queue = multiprocessing.Queue()
+    shared_mem = multiprocessing.Value("i", 0)
+    pipe_pairs = make_p2p_pipe(world_size)
+
+    processes = []
+    for rank in range(world_size):
+        p = multiprocessing.Process(
+            target=f,
+            args=(rank, world_size, queue, shared_mem, pipe_pairs),
+        )
+        processes.append(p)
+        p.start()
+
+    for p in processes:
+        p.join()
+
+
+def test_broadcast(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    source_rank = 1
+
+    data = [10 * x for x in range(world_size)] if rank == source_rank else None
 
     time.sleep(0.0001 * rank)
     print(f"Previous data: {data}")
     time.sleep(0.01)
 
-    # mpi ops, undo comment to see what will happen
-    # data = scatter(data, source_rank=source_rank)
+    data = broadcast(data, source_rank=source_rank)
+
+    time.sleep(0.01 * rank)
+    print("Rank", rank, "data:", data)
+
+
+def test_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    source_rank = 0
+
+    data = rank * 10
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data: {data}")
+    time.sleep(0.01)
+
     data = reduce(data, target_rank=source_rank, op="mean")
-    # data = all_gather(data)
-    # data = all_reduce(data, op="mean")
+
+    time.sleep(0.01 * rank)
+    print("Rank", rank, "data:", data)
+
+
+def test_scatter(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    source_rank = 0
+    data = [10 * x for x in range(world_size)] if rank == source_rank else None
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data: {data}")
+    time.sleep(0.01)
+
+    data = scatter(data, source_rank=source_rank)
+
+    time.sleep(0.01 * rank)
+    print("Rank", rank, "data:", data)
+
+
+def test_all_gather(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    data = rank * 10
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data: {data}")
+    time.sleep(0.01)
+
+    data = all_gather(data)
+
+    time.sleep(0.01 * rank)
+    print("Rank", rank, "data:", data)
+
+
+def test_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    data = rank * 10
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data: {data}")
+    time.sleep(0.01)
+
+    data = all_reduce(data, op="mean")
 
     time.sleep(0.01 * rank)
     print("Rank", rank, "data:", data)
 
 
 if __name__ == "__main__":
-    # import platform
-    # assert platform.system() == "Linux", "The script only works on Linux."
-
-    world_size = 4  # Number of processes
-    queue = multiprocessing.Queue()
-    shared_mem = multiprocessing.Value("i", 0)
-    pipe_pairs = make_p2p_pipe(world_size)
-
-    # Create a process for each rank
-    processes = []
-    for rank in range(world_size):
-        p = multiprocessing.Process(
-            target=worker,
-            args=(rank, world_size, queue, shared_mem, pipe_pairs),
-        )
-        processes.append(p)
-        p.start()
-
-    # Wait for all processes to complete
-    for p in processes:
-        p.join()
+    mpi_frame(test_broadcast)
+    mpi_frame(test_reduce)
+    mpi_frame(test_scatter)
+    mpi_frame(test_all_gather)
+    mpi_frame(test_all_reduce)
