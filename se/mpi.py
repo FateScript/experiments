@@ -103,16 +103,8 @@ def original_rank(virtual_rank: int, source_rank: int, world_size: int) -> int:
     return (virtual_rank + source_rank) % world_size
 
 
-def barrier():
-    # reference in gloo:
-    # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/barrier.cc#L18
-    rank = get_rank()
-    world_size = get_world_size()
-    # TODO: implement later
-
-
 def barrier_shared_var():
-    # using a shared variable to synchronize
+    # using a shared variable to synchronize processes
     # NOTE: this method has `concurrency` and `reinitialization` issues
     world_size = get_world_size()
     sync_counter = get_shared_mem()
@@ -122,6 +114,39 @@ def barrier_shared_var():
 
     while sync_counter.value < world_size:
         time.sleep(0.001)
+
+
+def barrier_brooks_algorithm():
+    # reference paper: https://www.inf.ed.ac.uk/teaching/courses/ppls/BarrierPaper.pdf
+    rank = get_rank()
+    world_size = get_world_size()
+    pipes = get_pipes()
+
+    size = 1
+    while size < world_size:
+        # is_direction_up = (rank % (2 * size)) < size
+        # comm_rank = (rank + size) % world_size if is_direction_up else (rank - size) % world_size
+        comm_rank = rank ^ size  # the same as above
+        pipes[(rank, comm_rank)].send(True)  # just send a signal
+        pipes[(rank, comm_rank)].recv()
+        size <<= 1
+
+
+def barrier():
+    # dissemination barrier algorithm
+    # reference in gloo:
+    # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/barrier.cc#L18
+    rank = get_rank()
+    world_size = get_world_size()
+    pipes = get_pipes()
+
+    size = 1
+    while size < world_size:
+        to_rank = (rank + size) % world_size
+        pipes[(rank, to_rank)].send(True)  # just send a signal
+        from_rank = (rank - size) % world_size
+        pipes[(rank, from_rank)].recv()
+        size <<= 1
 
 
 def gather_shared_queue(data, target_rank: int = 0):
@@ -274,7 +299,7 @@ def broadcast(data, source_rank: int = 0):
 def all_gather(data):
     """All gather = Gather + Broadcast"""
     data = gather(data)
-    # barrier_shared_var()   # used with `gather_shared_queue` to avoid race condition
+    # barrier()
     data = broadcast(data)
     return data
 
@@ -282,7 +307,7 @@ def all_gather(data):
 def all_reduce(data, op: str = "sum"):
     """All reduce = Reduce + Broadcast"""
     data = reduce(data, op=op)
-    # barrier_shared_var()
+    # barrier()
     data = broadcast(data)
     return data
 
@@ -312,6 +337,21 @@ def mpi_frame(f, world_size: int = 4):
         p.join()
 
 
+def test_barrier(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+
+    time.sleep(0.01 * rank)
+    print(f"rank{rank} enter func")
+
+    time.sleep(2 * rank)
+    print(f"rank{rank} enter barrier")
+    barrier()
+    # barrier_brooks_algorithm()
+
+    time.sleep(0.01 * rank)
+    print(f"Rank{rank} leave.")
+
+
 def test_broadcast(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
     source_rank = 1
@@ -325,7 +365,7 @@ def test_broadcast(rank, world_size, queue, signal_queue, pipe_pairs):
     data = broadcast(data, source_rank=source_rank)
 
     time.sleep(0.01 * rank)
-    print("Rank", rank, "data:", data)
+    print(f"Rank {rank} data: {data}")
 
 
 def test_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
@@ -341,7 +381,7 @@ def test_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     data = reduce(data, target_rank=source_rank, op="mean")
 
     time.sleep(0.01 * rank)
-    print("Rank", rank, "data:", data)
+    print(f"Rank {rank} data: {data}")
 
 
 def test_scatter(rank, world_size, queue, signal_queue, pipe_pairs):
@@ -356,7 +396,7 @@ def test_scatter(rank, world_size, queue, signal_queue, pipe_pairs):
     data = scatter(data, source_rank=source_rank)
 
     time.sleep(0.01 * rank)
-    print("Rank", rank, "data:", data)
+    print(f"Rank {rank} data: {data}")
 
 
 def test_all_gather(rank, world_size, queue, signal_queue, pipe_pairs):
@@ -384,10 +424,11 @@ def test_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     data = all_reduce(data, op="mean")
 
     time.sleep(0.01 * rank)
-    print("Rank", rank, "data:", data)
+    print(f"Rank {rank} data: {data}")
 
 
 if __name__ == "__main__":
+    mpi_frame(test_barrier)
     mpi_frame(test_broadcast)
     mpi_frame(test_reduce)
     mpi_frame(test_scatter)
