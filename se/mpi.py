@@ -10,6 +10,8 @@ import os
 import time
 from typing import Callable, Dict
 
+import numpy as np
+
 __all__ = [
     "get_rank",
     "get_world_size",
@@ -216,20 +218,87 @@ def scatter(data, source_rank: int = 0):
         return data
 
 
+def elementwise_sum(data1, data2):
+    if isinstance(data1, (float, int)):
+        return data1 + data2
+    elif isinstance(data1, np.ndarray):
+        return data1 + data2
+    else:  # iterable
+        data = [x + y for x, y in zip(data1, data2)]
+        return type(data1)(data)  # list, tuple, etc.
+
+
+def elementwise_mean(data1, data2):
+    if isinstance(data1, (float, int)):
+        return (data1 + data2) / 2
+    elif isinstance(data1, np.ndarray):
+        return (data1 + data2) / 2
+    else:  # iterable
+        data = [(x + y) / 2 for x, y in zip(data1, data2)]
+        return type(data1)(data)  # list, tuple, etc.
+
+
+def elementwise_max(data1, data2):
+    if isinstance(data1, (float, int)):
+        return max(data1, data2)
+    elif isinstance(data1, np.ndarray):
+        return np.maximum(data1, data2)
+    else:  # iterable
+        data = [max(x, y) for x, y in zip(data1, data2)]
+        return type(data1)(data)  # list, tuple, etc.
+
+
+def elementwise_min(data1, data2):
+    if isinstance(data1, (float, int)):
+        return min(data1, data2)
+    elif isinstance(data1, np.ndarray):
+        return np.minimum(data1, data2)
+    else:  # iterable
+        data = [min(x, y) for x, y in zip(data1, data2)]
+        return type(data1)(data)  # list, tuple, etc.
+
+
+def elementwise_div(data, size: int):
+    if isinstance(data, (float, int)):
+        return data / size
+    elif isinstance(data, np.ndarray):
+        return data / size
+    else:  # iterable
+        ret_data = [x / size for x in data]
+        return type(data)(ret_data)  # list, tuple, etc.
+
+
+OP_FUNCS = {
+    "sum": elementwise_sum,
+    "mean": elementwise_mean,
+    "max": elementwise_max,
+    "min": elementwise_min,
+}
+
+
 def op_to_func(op: str) -> Callable:
-    assert op in ["sum", "mean", "max", "min"], f"Invalid operation: {op}."
-    if op == "sum":
-        return sum
-    elif op == "mean":
-        return lambda x: sum(x) / len(x)
-    elif op == "max":
-        return max
-    elif op == "min":
-        return min
+    op = op.lower()
+    if op not in OP_FUNCS:
+        raise ValueError(f"Invalid operation: {op}.")
+    return OP_FUNCS[op]
+
+
+def op_func_iterable(data, op: str):
+    data_length = len(data)
+    f: Callable = elementwise_sum if op == "mean" else op_to_func(op)
+
+    if data_length == 1:
+        return data[0]
+    ret_data = data[0]
+    for x in data[1:]:
+        ret_data = f(ret_data, x)
+
+    if op == "mean":
+        ret_data = elementwise_div(ret_data, data_length)
+    return ret_data
 
 
 def reduce(data, target_rank: int = 0, op: str = "sum"):
-    op_func = op_to_func(op)
     rank = get_rank()
     world_size = get_world_size()
     pipes = get_pipes()
@@ -242,7 +311,7 @@ def reduce(data, target_rank: int = 0, op: str = "sum"):
                 continue
             recv_data = pipes[(rank, src_rank)].recv()
             gather_data.append(recv_data)
-        data = op_func(gather_data)
+        data = op_func_iterable(gather_data, op)
         return data
     else:
         pipes[(rank, target_rank)].send(data)
@@ -312,8 +381,66 @@ def all_reduce(data, op: str = "sum"):
     return data
 
 
-def ring_all_reduce(data):
-    pass
+def reduce_scatter(data, op: str = "sum"):
+    rank = get_rank()
+    world_size = get_world_size()
+    recv_rank, to_rank = (rank - 1) % world_size, (rank + 1) % world_size  # recv from left, send to right  # noqa
+    pipes = get_pipes()
+    chunk_size = math.ceil(len(data) / world_size)
+    func: Callable = elementwise_sum if op == "mean" else op_to_func(op)
+
+    for round in range(world_size - 1):  # total n - 1 rounds, the n-th round is meaningless
+        # send data to the right
+        send_chunk = (rank - round) % world_size
+        send_data = data[send_chunk * chunk_size: (send_chunk + 1) * chunk_size]
+        pipes[(rank, to_rank)].send(send_data)
+
+        # recv and update data from the left
+        recv_chunk = (send_chunk - 1) % world_size
+        recv_data = pipes[(rank, recv_rank)].recv()
+        origin_data = data[recv_chunk * chunk_size: (recv_chunk + 1) * chunk_size]
+        data[recv_chunk * chunk_size: (recv_chunk + 1) * chunk_size] = func(recv_data, origin_data)
+
+    if op == "mean":
+        data = elementwise_div(data, world_size)
+
+    return data
+
+
+def ring_all_gather(data):
+    rank = get_rank()
+    world_size = get_world_size()
+    recv_rank, to_rank = (rank - 1) % world_size, (rank + 1) % world_size
+    pipes = get_pipes()
+    chunk_size = math.ceil(len(data) / world_size)
+
+    for round in range(world_size - 1):
+        # send data to the right
+        send_chunk = (rank + 1 - round) % world_size
+        send_data = data[send_chunk * chunk_size: (send_chunk + 1) * chunk_size]
+        pipes[(rank, to_rank)].send(send_data)
+
+        # recv and set data from the left
+        # the left data is the ground truth data, we should only care about the right chunk id.
+        recv_chunk = (send_chunk - 1) % world_size
+        recv_data = pipes[(rank, recv_rank)].recv()
+        data[recv_chunk * chunk_size: (recv_chunk + 1) * chunk_size] = recv_data
+
+    return data
+
+
+def ring_all_reduce(data, op: str = "sum"):
+    """Ring all reduce = reduce-scatter + all-gather"""
+    # code: https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/allreduce.cc#L147
+    # reference: https://github.com/facebookincubator/gloo/blob/main/docs/algorithms.md
+
+    # There is also a 2D-ring all-reduce algorithm (Intra ring + Inter ring), like bcube algorithm.
+    # Here is the paper links:
+    # https://arxiv.org/pdf/1807.11205
+    # https://arxiv.org/pdf/1811.05233
+    data = reduce_scatter(data, op=op)
+    data = ring_all_gather(data)
+    return data
 
 
 def mpi_frame(f, world_size: int = 4):
@@ -427,6 +554,20 @@ def test_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     print(f"Rank {rank} data: {data}")
 
 
+def test_ring_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    data = [rank * 10 + x for x in range(world_size * 2)] + [1]
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data: {data}")
+    time.sleep(0.01)
+
+    data = ring_all_reduce(data, op="mean")
+
+    time.sleep(0.01 * rank)
+    print(f"Rank {rank} data: {data}")
+
+
 if __name__ == "__main__":
     mpi_frame(test_barrier)
     mpi_frame(test_broadcast)
@@ -434,3 +575,4 @@ if __name__ == "__main__":
     mpi_frame(test_scatter)
     mpi_frame(test_all_gather)
     mpi_frame(test_all_reduce)
+    mpi_frame(test_ring_all_reduce)
