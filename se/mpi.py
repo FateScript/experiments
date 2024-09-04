@@ -298,26 +298,6 @@ def op_func_iterable(data, op: str):
     return ret_data
 
 
-def reduce(data, target_rank: int = 0, op: str = "sum"):
-    rank = get_rank()
-    world_size = get_world_size()
-    pipes = get_pipes()
-
-    if rank == target_rank:
-        gather_data = []
-        for src_rank in range(world_size):
-            if src_rank == target_rank:
-                gather_data.append(data)
-                continue
-            recv_data = pipes[(rank, src_rank)].recv()
-            gather_data.append(recv_data)
-        data = op_func_iterable(gather_data, op)
-        return data
-    else:
-        pipes[(rank, target_rank)].send(data)
-        return None
-
-
 def broadcast_p2p_version(data, source_rank: int = 0):
     # A simplified version of broadcast using point-to-point communication
     # The source rank sends data to all other ranks, O(n) time complexity
@@ -373,14 +353,6 @@ def all_gather(data):
     return data
 
 
-def all_reduce(data, op: str = "sum"):
-    """All reduce = Reduce + Broadcast"""
-    data = reduce(data, op=op)
-    # barrier()
-    data = broadcast(data)
-    return data
-
-
 def reduce_scatter(data, op: str = "sum"):
     rank = get_rank()
     world_size = get_world_size()
@@ -429,6 +401,14 @@ def ring_all_gather(data):
     return data
 
 
+def all_reduce(data, op: str = "sum"):
+    """All reduce = Reduce + Broadcast"""
+    data = reduce(data, op=op)
+    # barrier()
+    data = broadcast(data)
+    return data
+
+
 def ring_all_reduce(data, op: str = "sum"):
     """Ring all reduce = reduce-scatter + all-gather"""
     # code: https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/allreduce.cc#L147
@@ -441,6 +421,50 @@ def ring_all_reduce(data, op: str = "sum"):
     data = reduce_scatter(data, op=op)
     data = ring_all_gather(data)
     return data
+
+
+def reduce_naive(data, target_rank: int = 0, op: str = "sum"):
+    rank = get_rank()
+    world_size = get_world_size()
+    pipes = get_pipes()
+
+    if rank == target_rank:
+        gather_data = []
+        for src_rank in range(world_size):
+            if src_rank == target_rank:
+                gather_data.append(data)
+                continue
+            recv_data = pipes[(rank, src_rank)].recv()
+            gather_data.append(recv_data)
+        data = op_func_iterable(gather_data, op)
+        return data
+    else:
+        pipes[(rank, target_rank)].send(data)
+        return None
+
+
+def reduce(data, target_rank: int = 0, op: str = "sum"):
+    # reference in gloo:
+    # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/reduce.cc#L21
+    # in short, reduce = reduce_scatter + root gather
+    rank, world_size = get_rank(), get_world_size()
+    pipes = get_pipes()
+    chunk_size = math.ceil(len(data) / world_size)
+    chunk_idx = (rank + 1) % world_size
+
+    data = reduce_scatter(data, op=op)
+    if rank == target_rank:
+        for from_rank in range(world_size):
+            if from_rank == rank:
+                continue
+            from_chunk_idx = (from_rank + 1) % world_size
+            recv_data = pipes[(rank, from_rank)].recv()
+            data[from_chunk_idx * chunk_size: (from_chunk_idx + 1) * chunk_size] = recv_data
+        return data
+    else:
+        send_data = data[chunk_idx * chunk_size: (chunk_idx + 1) * chunk_size]
+        pipes[(rank, target_rank)].send(send_data)
+        return None
 
 
 def mpi_frame(f, world_size: int = 4):
@@ -499,13 +523,29 @@ def test_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
     source_rank = 0
 
+    data = [rank * 10 + x for x in range(world_size * 2)]
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data: {data}")
+    time.sleep(0.01)
+
+    data = reduce(data, target_rank=source_rank, op="sum")
+
+    time.sleep(0.01 * rank)
+    print(f"Rank {rank} data: {data}")
+
+
+def test_reduce_naive(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    source_rank = 0
+
     data = rank * 10
 
     time.sleep(0.0001 * rank)
     print(f"Previous data: {data}")
     time.sleep(0.01)
 
-    data = reduce(data, target_rank=source_rank, op="mean")
+    data = reduce_naive(data, target_rank=source_rank, op="mean")
 
     time.sleep(0.01 * rank)
     print(f"Rank {rank} data: {data}")
@@ -571,6 +611,7 @@ def test_ring_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
 if __name__ == "__main__":
     mpi_frame(test_barrier)
     mpi_frame(test_broadcast)
+    mpi_frame(test_reduce_naive)
     mpi_frame(test_reduce)
     mpi_frame(test_scatter)
     mpi_frame(test_all_gather)
