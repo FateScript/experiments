@@ -8,7 +8,7 @@ import math
 import multiprocessing
 import os
 import time
-from typing import Callable, Dict
+from typing import Any, Callable, Dict, List
 
 import numpy as np
 
@@ -268,6 +268,15 @@ def elementwise_div(data, size: int):
         return type(data)(ret_data)  # list, tuple, etc.
 
 
+def concat_data(data_list: List[Any]):
+    if isinstance(data_list[0], (float, int)):  # single number
+        return data_list
+    elif isinstance(data_list[0], np.ndarray):
+        return np.concatenate(data_list)
+    else:  # iterable
+        return type(data_list[0])([x for data in data_list for x in data])
+
+
 OP_FUNCS = {
     "sum": elementwise_sum,
     "mean": elementwise_mean,
@@ -345,12 +354,32 @@ def broadcast(data, source_rank: int = 0):
     return data
 
 
-def all_gather(data):
+def all_gather_naive(data):
     """All gather = Gather + Broadcast"""
     data = gather(data)
     # barrier()
     data = broadcast(data)
     return data
+
+
+def all_gather(data):
+    # reference in gloo:
+    # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/allgather.cc#L19
+    rank, world_size = get_rank(), get_world_size()
+    pipes = get_pipes()
+    send_rank = (rank + 1) % world_size
+    recv_rank = (rank - 1) % world_size
+
+    data_list = [None for _ in range(world_size)]
+    data_list[rank] = data
+    send_idx = rank
+    for _ in range(world_size - 1):
+        pipes[(rank, send_rank)].send(data_list[send_idx])
+        recv_data = pipes[(rank, recv_rank)].recv()
+        send_idx = (send_idx - 1) % world_size
+        data_list[send_idx] = recv_data  # the recv data is the send data in the next round
+
+    return concat_data(data_list)
 
 
 def reduce_scatter(data, op: str = "sum"):
@@ -566,9 +595,26 @@ def test_scatter(rank, world_size, queue, signal_queue, pipe_pairs):
     print(f"Rank {rank} data: {data}")
 
 
-def test_all_gather(rank, world_size, queue, signal_queue, pipe_pairs):
+def test_all_gather_naive(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
     data = rank * 10
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data: {data}")
+    time.sleep(0.01)
+
+    data = all_gather_naive(data)
+
+    time.sleep(0.01 * rank)
+    print("Rank", rank, "data:", data)
+
+
+def test_all_gather(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    # data = [rank * 10 + x for x in range(world_size)]
+    # if rank == 0:
+    #     data = [0] + data
+    data = np.random.randint(rank * 10, (rank + 1) * 10, size=world_size).reshape(1, -1)
 
     time.sleep(0.0001 * rank)
     print(f"Previous data: {data}")
@@ -614,6 +660,7 @@ if __name__ == "__main__":
     mpi_frame(test_reduce_naive)
     mpi_frame(test_reduce)
     mpi_frame(test_scatter)
+    mpi_frame(test_all_gather_naive)
     mpi_frame(test_all_gather)
     mpi_frame(test_all_reduce)
     mpi_frame(test_ring_all_reduce)
