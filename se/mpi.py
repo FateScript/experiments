@@ -16,13 +16,14 @@ __all__ = [
     "get_rank",
     "get_world_size",
     "get_pipes",
+    "all_to_all",
     "barrier",
     "broadcast",
     "gather",
     "scatter",
     "all_gather",
     "reduce",
-    "all_reduce",
+    "ring_all_reduce",
 ]
 
 
@@ -354,6 +355,29 @@ def broadcast(data, source_rank: int = 0):
     return data
 
 
+def all_to_all(data):
+    # reference in gloo:
+    # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/alltoall.cc#L18
+    rank, world_size = get_rank(), get_world_size()
+    data_size = len(data)
+    assert data_size % world_size == 0, "Data size must be divisible by world_size."
+    pipes = get_pipes()
+    chunk_size = data_size // world_size
+
+    data_list = [None for _ in range(world_size)]
+    data_list[rank] = data[rank * chunk_size: (rank + 1) * chunk_size]
+
+    for turn in range(1, world_size):
+        # NOTE: send_rank and recv rank decide the send/recv data's chunk idx, very exquisite
+        send_rank = (rank + turn) % world_size
+        recv_rank = (rank - turn) % world_size
+        send_data = data[send_rank * chunk_size: (send_rank + 1) * chunk_size]
+        pipes[(rank, send_rank)].send(send_data)
+        recv_data = pipes[(rank, recv_rank)].recv()
+        data_list[recv_rank] = recv_data
+    return concat_data(data_list)
+
+
 def all_gather_naive(data):
     """All gather = Gather + Broadcast"""
     data = gather(data)
@@ -432,7 +456,7 @@ def ring_all_gather(data):
 
 def all_reduce(data, op: str = "sum"):
     """All reduce = Reduce + Broadcast"""
-    data = reduce(data, op=op)
+    data = reduce_naive(data, op=op)
     # barrier()
     data = broadcast(data)
     return data
@@ -654,13 +678,29 @@ def test_ring_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     print(f"Rank {rank} data: {data}")
 
 
+def test_all_to_all(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    data = [rank * 10 + x for x in range(world_size)]
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous data @rank{rank}: {data}")
+    time.sleep(0.01)
+
+    data = all_to_all(data)
+
+    time.sleep(0.01 * rank)
+    print(f"Rank {rank} data: {data}")
+
+
 if __name__ == "__main__":
-    mpi_frame(test_barrier)
-    mpi_frame(test_broadcast)
-    mpi_frame(test_reduce_naive)
-    mpi_frame(test_reduce)
-    mpi_frame(test_scatter)
-    mpi_frame(test_all_gather_naive)
-    mpi_frame(test_all_gather)
-    mpi_frame(test_all_reduce)
-    mpi_frame(test_ring_all_reduce)
+    world_size = 4
+    mpi_frame(test_barrier, world_size=world_size)
+    mpi_frame(test_broadcast, world_size=world_size)
+    mpi_frame(test_reduce_naive, world_size=world_size)
+    mpi_frame(test_reduce, world_size=world_size)
+    mpi_frame(test_scatter, world_size=world_size)
+    mpi_frame(test_all_gather_naive, world_size=world_size)
+    mpi_frame(test_all_gather, world_size=world_size)
+    mpi_frame(test_all_reduce, world_size=world_size)
+    mpi_frame(test_ring_all_reduce, world_size=world_size)
+    mpi_frame(test_all_to_all, world_size=world_size)
