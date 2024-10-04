@@ -27,3 +27,19 @@ Run the following command to trace the packet on the loopback address, port 1234
 ```
 sudo tcpdump -i lo0 port 12345 -v
 ```
+
+#### client/server model
+
+Run the following command to start server. 3490 is the port number.
+```
+python3 select_server.py 3490
+```
+
+Run the following command to start multiple clients. 
+
+`alice` `bob` and `chris` are the client names, `localhost` is the server address and `3490` is the port number.
+```
+python3 select_client.py alice localhost 3490
+python3 select_client.py bob localhost 3490
+python3 select_client.py chris localhost 3490
+```
