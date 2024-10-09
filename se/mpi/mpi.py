@@ -680,9 +680,9 @@ def test_ring_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_all_to_all(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
-    data = [rank * 10 + x for x in range(world_size)]
+    data = [rank * 10 + x for x in range(world_size * 2)]
 
-    time.sleep(0.0001 * rank)
+    time.sleep(0.1 * rank)
     print(f"Previous data @rank{rank}: {data}")
     time.sleep(0.01)
 

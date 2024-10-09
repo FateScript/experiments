@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
 import bisect
+import curses
 import functools
 import itertools
 import math
 import sys
-import curses
-
 from typing import Tuple
 
 from console import get_press_key, termainal_size

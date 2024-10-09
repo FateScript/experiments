@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
-import cv2
-import time
 import contextlib
+import time
 from imgcat import imgcat
+
+import cv2
 
 
 @contextlib.contextmanager
