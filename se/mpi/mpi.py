@@ -24,6 +24,9 @@ __all__ = [
     "all_gather",
     "reduce",
     "ring_all_reduce",
+    "split_last_dim",
+    "mpi_frame",
+    "init_env",
 ]
 
 
@@ -269,11 +272,21 @@ def elementwise_div(data, size: int):
         return type(data)(ret_data)  # list, tuple, etc.
 
 
+def split_last_dim(data):
+    """split last dim by rank and world size"""
+    rank = get_rank()
+    world_size = get_world_size()
+    if world_size == 1:
+        return data
+    world_size = get_world_size()
+    return np.split(data, world_size, axis=-1)[rank]
+
+
 def concat_data(data_list: List[Any]):
     if isinstance(data_list[0], (float, int)):  # single number
         return data_list
     elif isinstance(data_list[0], np.ndarray):
-        return np.concatenate(data_list)
+        return np.concatenate(data_list, axis=-1)
     else:  # iterable
         return type(data_list[0])([x for data in data_list for x in data])
 
