@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-import os
 import functools
+import os
+
 import numpy as np
 
 from mpi import (  # isort:skip
@@ -10,10 +11,15 @@ from mpi import (  # isort:skip
     barrier,
     init_env,
     mpi_frame,
+    split_first_dim,
     split_last_dim,
 )
 
-__all__ = ["Linear", "ColumnParallelLinear"]
+__all__ = [
+    "Linear",
+    "ColumnParallelLinear",
+    "RowParallelLinear",
+]
 
 
 class Linear:
@@ -86,9 +92,49 @@ class ColumnParallelLinear(Linear):
     def backward(self, grad):
         if self.gather_output:
             grad = split_last_dim(grad)
-        prev_grad = super().backward(grad)
-        prev_grad = all_reduce(prev_grad)
-        return prev_grad
+        data_grad = super().backward(grad)
+        data_grad = all_reduce(data_grad, op="sum")
+        return data_grad
+
+
+class RowParallelLinear(Linear):
+    """
+    Linear layer with row parallelism.
+
+    The linear layer is defined as y = x * w + b. w is parallelized along
+    its first dimension and x along its second dimension as:
+               -   -
+              | w_1 |
+              | .   |
+          w = | .   |        x = [x_1, ..., x_p]
+              | .   |
+              | w_p |
+               -   -
+    """
+    def __init__(self, weights, bias=None, input_is_parallel: bool = False):
+        """
+        Args:
+            input_is_parallel(bool): whether the input x is already parallelized along the last dim
+        """
+        super().__init__(weights, bias)
+        self.input_is_parallel = input_is_parallel
+
+    def forward(self, x):
+        if self.input_is_parallel:
+            data = x
+        else:
+            data = split_last_dim(x)
+
+        part_y = super().forward(data)
+        y = all_reduce(part_y, op="sum")
+        return y
+
+    def backward(self, grad):
+        data_grad = super().backward(grad)
+        if self.input_is_parallel:
+            return data_grad
+        data_grad = all_gather(data_grad)
+        return data_grad
 
 
 def linear_step():
@@ -123,7 +169,33 @@ def col_linear(rank, world_size, queue, signal_queue, pipe_pairs):
     data = np.random.rand(batch_size, input_dim)
 
     w_parallel = split_last_dim(w)
+    print(f"rank {rank} w_parallel shape: {w_parallel.shape}")
     linear = ColumnParallelLinear(weights=w_parallel, gather_output=True)
+
+    output = linear.forward(data)
+    grad_output = np.random.rand(*output.shape)
+    data_grad = linear.backward(grad_output)
+    linear.step_grad(lr)
+
+    np.save(f"linear_weight_rank{rank}.npy", linear.weight)
+    np.save(f"linear_output_rank{rank}.npy", output)
+    np.save(f"linear_data_grad_rank{rank}.npy", data_grad)
+
+
+def row_linear(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    np.random.seed(42)
+
+    batch_size = 16
+    input_dim, output_dim = 128, 32
+    lr = 1
+
+    w = np.random.rand(input_dim, output_dim)
+    data = np.random.rand(batch_size, input_dim)
+
+    w_parallel = split_first_dim(w)
+    print(f"rank {rank} w_parallel shape: {w_parallel.shape}")
+    linear = RowParallelLinear(weights=w_parallel)
 
     output = linear.forward(data)
     grad_output = np.random.rand(*output.shape)
@@ -140,6 +212,11 @@ def col_parallel_step():
     mpi_frame(col_linear, world_size=world_size)
 
 
+def row_parallel_step():
+    world_size = 4
+    mpi_frame(row_linear, world_size=world_size)
+
+
 def check(prefix: str):
     print(f"\nchecking {prefix}...")
     out = np.load(f"{prefix}.npy")
@@ -152,8 +229,10 @@ def check(prefix: str):
     print(f"checking {prefix} passed.")
 
 
-def check_col_weights():
-    print("\nchecking col weights...")
+def check_weights(para_type: str = "col"):
+    assert para_type in ["col", "row"]
+    axis = -1 if para_type == "col" else 0
+    print(f"\nchecking {para_type} weights...")
     out = np.load("linear_weight.npy")
 
     weights = []
@@ -162,10 +241,10 @@ def check_col_weights():
         if os.path.exists(load_name):
             data = np.load(load_name)
             weights.append(data)
-    w = np.concatenate(weights, axis=-1)
+    w = np.concatenate(weights, axis=axis)
     assert np.allclose(out, w, atol=1e-8)
 
-    print("checking col weights passed.")
+    print(f"checking {para_type} weights passed.")
 
 
 check_output = functools.partial(check, prefix="linear_output")
@@ -178,8 +257,21 @@ def test_col_linear():
 
     check_output()
     check_grad()
-    check_col_weights()
+    check_weights(para_type="col")
+
+
+def test_row_linear():
+    linear_step()
+    row_parallel_step()
+
+    check_output()
+    check_grad()
+    check_weights(para_type="row")
 
 
 if __name__ == "__main__":
+    print("Test linear layer with column parallelism...")
     test_col_linear()
+
+    print("\n\nTest linear layer with row parallelism...")
+    test_row_linear()

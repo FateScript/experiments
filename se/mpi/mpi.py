@@ -4,6 +4,7 @@
 # Reference: https://github.com/facebookincubator/gloo
 # See https://github.com/mpi4py/mpi4py if you want to use MPI in Python.
 
+import functools
 import math
 import multiprocessing
 import os
@@ -24,7 +25,9 @@ __all__ = [
     "all_gather",
     "reduce",
     "ring_all_reduce",
+    "auto_split",
     "split_last_dim",
+    "split_first_dim",
     "mpi_frame",
     "init_env",
 ]
@@ -272,14 +275,18 @@ def elementwise_div(data, size: int):
         return type(data)(ret_data)  # list, tuple, etc.
 
 
-def split_last_dim(data):
-    """split last dim by rank and world size"""
+def auto_split(data, axis: int = -1):
+    """split dim by rank and world size"""
     rank = get_rank()
     world_size = get_world_size()
     if world_size == 1:
         return data
     world_size = get_world_size()
-    return np.split(data, world_size, axis=-1)[rank]
+    return np.split(data, world_size, axis=axis)[rank]
+
+
+split_last_dim = auto_split
+split_first_dim = functools.partial(auto_split, axis=0)
 
 
 def concat_data(data_list: List[Any]):
@@ -399,7 +406,7 @@ def all_gather_naive(data):
     return data
 
 
-def all_gather(data):
+def all_gather(data, concat: bool = True):
     # reference in gloo:
     # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/allgather.cc#L19
     rank, world_size = get_rank(), get_world_size()
@@ -416,7 +423,9 @@ def all_gather(data):
         send_idx = (send_idx - 1) % world_size
         data_list[send_idx] = recv_data  # the recv data is the send data in the next round
 
-    return concat_data(data_list)
+    if concat:
+        return concat_data(data_list)
+    return data_list
 
 
 def reduce_scatter(data, op: str = "sum"):
