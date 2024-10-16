@@ -1,8 +1,8 @@
 # Example usage:
 #
-# python select_client.py alice localhost 3490
-# python select_client.py bob localhost 3490
-# python select_client.py chris localhost 3490
+# python3 select_client.py alice localhost 3490
+# python3 select_client.py bob localhost 3490
+# python3 select_client.py chris localhost 3490
 #
 # The first argument is a prefix that the server will print to make it
 # easier to tell the different clients apart. You can put anything
