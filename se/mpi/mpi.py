@@ -18,6 +18,7 @@ __all__ = [
     "get_world_size",
     "get_pipes",
     "all_to_all",
+    "all_to_all_array",
     "barrier",
     "broadcast",
     "gather",
@@ -275,25 +276,28 @@ def elementwise_div(data, size: int):
         return type(data)(ret_data)  # list, tuple, etc.
 
 
-def auto_split(data, axis: int = -1):
+def auto_split(data, axis: int = -1, rank_only: bool = True):
     """split dim by rank and world size"""
     rank = get_rank()
     world_size = get_world_size()
     if world_size == 1:
         return data
     world_size = get_world_size()
-    return np.split(data, world_size, axis=axis)[rank]
+    chunks = np.split(data, world_size, axis=axis)
+    if rank_only:
+        return chunks[rank]
+    return chunks
 
 
 split_last_dim = auto_split
 split_first_dim = functools.partial(auto_split, axis=0)
 
 
-def concat_data(data_list: List[Any]):
+def concat_data(data_list: List[Any], axis: int = -1):
     if isinstance(data_list[0], (float, int)):  # single number
         return data_list
     elif isinstance(data_list[0], np.ndarray):
-        return np.concatenate(data_list, axis=-1)
+        return np.concatenate(data_list, axis=axis)
     else:  # iterable
         return type(data_list[0])([x for data in data_list for x in data])
 
@@ -375,7 +379,14 @@ def broadcast(data, source_rank: int = 0):
     return data
 
 
-def all_to_all(data):
+def all_to_all(data, axis: int = -1):
+    """
+    All-to-all communication algorithm.
+
+    Args:
+        data: The data to be exchanged. Could be a list, tuple, numpy array, etc.
+        axis (int): The axis to concat. Default to -1, the last dim.
+    """
     # reference in gloo:
     # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/alltoall.cc#L18
     rank, world_size = get_rank(), get_world_size()
@@ -395,7 +406,23 @@ def all_to_all(data):
         pipes[(rank, send_rank)].send(send_data)
         recv_data = pipes[(rank, recv_rank)].recv()
         data_list[recv_rank] = recv_data
-    return concat_data(data_list)
+    return concat_data(data_list, axis=axis)
+
+
+def all_to_all_array(data: np.array, split_axis: int = -1, concat_axis: int = None):
+    """
+    All to all communication for numpy array
+
+    Args:
+        data (np.ndarray): The data to be exchanged.
+        split_axis (int): The axis to split. Default to -1, the last dim.
+        concat_axis (int): The axis to concat. Default to None, not concat.
+    """
+    split_data = auto_split(data, axis=split_axis, rank_only=False)
+    trans_data = all_to_all(split_data)
+    if concat_axis is None:
+        return trans_data
+    return np.concatenate(trans_data, axis=concat_axis)
 
 
 def all_gather_naive(data):
