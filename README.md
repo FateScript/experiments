@@ -11,7 +11,7 @@ Users might utilize these mini-projects for deliberate practice.
 
 ## Philosophy
 
-Here is of my philosophy of building this project, hope it could help you to build your own repo.
+Here's my philosophy of building this project, hope it could help you to build your own repo.
 
 * The best way to understand a concept that you are not familiar with is to implement it. 
 * Three steps to reinvent a wheel: 
