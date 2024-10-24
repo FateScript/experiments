@@ -17,6 +17,7 @@ __all__ = [
     "get_rank",
     "get_world_size",
     "get_pipes",
+    "log_rank",
     "all_to_all",
     "all_to_all_array",
     "barrier",
@@ -93,6 +94,12 @@ def set_world_size(world_size):
 
 def get_world_size() -> int:
     return int(os.environ["WORLD_SIZE"])
+
+
+def log_rank(*args, rank: int = 0):
+    cur_rank = get_rank()
+    if cur_rank == rank:
+        print(*args)
 
 
 def init_env(rank, world_size, queue, shared_mem, pipe_pairs):

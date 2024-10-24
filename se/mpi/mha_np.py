@@ -6,7 +6,6 @@ import numpy as np
 
 from mpi import (  # isort:skip
     all_to_all_array,
-    all_reduce,
     auto_split,
     init_env,
     mpi_frame,
@@ -114,6 +113,7 @@ class SequenceParallelMHA:
         self.v_proj = v_proj
         self.out_proj = out_proj
         self.num_heads = num_heads
+        self.attn = ScaledDotProductAttn()
 
     def __call__(self, x, mask=None):
         batch, _, dim = x.shape
@@ -124,36 +124,19 @@ class SequenceParallelMHA:
 
         q, k, v = self.split_heads(q), self.split_heads(k), self.split_heads(v)
 
-        q = all_to_all_array(q, split_axis=-1, concat_axis=-2)
-        k = all_to_all_array(k, split_axis=-1, concat_axis=-2)
-        v = all_to_all_array(v, split_axis=-1, concat_axis=-2)
+        # q, k, v are splited in head dimension
+        q = all_to_all_array(q, split_axis=1, concat_axis=-2)
+        k = all_to_all_array(k, split_axis=1, concat_axis=-2)
+        v = all_to_all_array(v, split_axis=1, concat_axis=-2)
 
-        out = self.parallel_attn(q, k, v, mask=mask)
-        out = all_to_all_array(out, split_axis=-2, concat_axis=-1)
+        out = self.attn(q, k, v, mask=mask)
+        out = all_to_all_array(out, split_axis=-2, concat_axis=1)
 
         out = np.swapaxes(out, 1, 2).reshape(batch, -1, dim)
         return linear_transform(out, self.out_proj)
 
-    def parallel_attn(self, q, k, v, mask=None):
-        _, head, _, dim = q.shape  # usually (batch, seq_len, dim) or (batch, head, length, dim)
-        scale = np.sqrt(dim * head)
-        mat = np.matmul(q, np.swapaxes(k, -1, -2)) / scale
-
-        # Each device only has a part of the mat like
-        # [w_0 * x0], [w1 * x1], [w_2 * x2], ...
-        # the true attn matrix is the sum of them, so all_reduce is needed.
-        # This is the only difference between parallel mha and normal mha.
-        mat = all_reduce(mat, op="sum")
-
-        if mask is not None:
-            mat = np.where(mask == 0, -1e6, mat)
-
-        mat = softmax(mat, axis=-1)
-
-        v = np.matmul(mat, v)
-        return v
-
     def split_heads(self, x):
+        # The same as MultiHeadAttn.split_heads
         batch, seq, dim = x.shape
         tensor_dim = dim // self.num_heads
         x = x.reshape(batch, seq, self.num_heads, tensor_dim)
@@ -193,8 +176,10 @@ def seq_mha_forward(rank, world_size, queue, signal_queue, pipe_pairs):
 
 
 def check_seq_parallel_mha():
-    world_size = 4
-    mpi_frame(seq_mha_forward, world_size=world_size)
+    for world_size in [2, 4]:  # num parallel should be divisible by num_heads
+        print(f"\nCheck Seq Parallel MHA with world size {world_size}")
+        mpi_frame(seq_mha_forward, world_size=world_size)
+        print()
 
 
 if __name__ == "__main__":
