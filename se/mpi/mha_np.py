@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import pickle
 
 import numpy as np
@@ -87,6 +88,9 @@ def mha_load_state_dict(module, state_dict):
 def check_np_mha():
     # load from torch model, see experiments/nn/module/mha.py
     load_file = "mha_input_output.pkl"
+    if not os.path.exists(load_file):
+        print(f"File {load_file} not found. Please use nn/module/mha.py to generate it.")
+
     with open(load_file, "rb") as f:
         data_dict = pickle.load(f)
     mha = MultiHeadAttn(32, num_heads=4)
@@ -105,6 +109,9 @@ class SequenceParallelMHA:
     A sequence parallel version of MultiHeadAttn.
     Reference: deepspeed ulysses.
     Paper: https://arxiv.org/pdf/2309.14509
+
+    The num of heads should be divivied by num parallel.
+    For example, if num_heads=4, num_parallel=2, then each parallel will handle 2 heads.
     """
 
     def __init__(self, q_proj, k_proj, v_proj, out_proj, num_heads: int):
@@ -124,7 +131,9 @@ class SequenceParallelMHA:
 
         q, k, v = self.split_heads(q), self.split_heads(k), self.split_heads(v)
 
-        # q, k, v are splited in head dimension
+        # NOTE: q, k, v are splited in head dimension.
+        # The first version I implemented in commit `6ef066864d6d` split tensor in last dimension,
+        # and that version requires one more all_reduce_sum operation on attn matrix.
         q = all_to_all_array(q, split_axis=1, concat_axis=-2)
         k = all_to_all_array(k, split_axis=1, concat_axis=-2)
         v = all_to_all_array(v, split_axis=1, concat_axis=-2)
@@ -148,6 +157,9 @@ def seq_mha_forward(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
 
     load_file = "mha_input_output.pkl"
+    if not os.path.exists(load_file):
+        print(f"File {load_file} not found. Please use nn/module/mha.py to generate it.")
+
     with open(load_file, "rb") as f:
         data_dict = pickle.load(f)
 
