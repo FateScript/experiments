@@ -19,6 +19,7 @@ __all__ = [
     "Linear",
     "ColumnParallelLinear",
     "RowParallelLinear",
+    "ParallelFFN",
 ]
 
 
@@ -135,6 +136,31 @@ class RowParallelLinear(Linear):
             return data_grad
         data_grad = all_gather(data_grad)
         return data_grad
+
+
+class ParallelFFN:
+
+    """
+    The 1st layer is column paralleled, the 2nd layer is row parallel paralleled.
+    This would save communication cost if complex activation function is used,
+    for example, relu(x1 + x2) != relu(x1) + relu(x2)
+    """
+
+    def __init__(self, w1, w2):
+        w1_parallel = split_last_dim(w1)
+        w2_parallel = split_first_dim(w2)
+        self.linear1 = ColumnParallelLinear(weights=w1_parallel, gather_output=False)
+        self.linear2 = RowParallelLinear(weights=w2_parallel, input_is_parallel=True)
+
+    def forward(self, x):
+        x = self.linear1.forward(x)
+        x = self.linear2.forward(x)
+        return x
+
+    def backward(self, grad):
+        l2_grad = self.linear2.backward(grad)
+        l1_grad = self.linear1.backward(l2_grad)
+        return l1_grad
 
 
 def linear_step():
@@ -269,9 +295,46 @@ def test_row_linear():
     check_weights(para_type="row")
 
 
+def parallel_ffn(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    np.random.seed(42)
+    batch, input_dim, hidden_dim, output_dim = 16, 128, 64, 32
+    w1, w2 = np.random.rand(input_dim, hidden_dim), np.random.rand(hidden_dim, output_dim)
+    data = np.random.rand(batch, input_dim)
+    grad = np.random.rand(batch, output_dim)
+
+    model = ParallelFFN(w1, w2)
+    output = model.forward(data)
+    grad_out = model.backward(grad)
+    np.save(f"ffn_output_rank{rank}.npy", output)
+    np.save(f"ffn_data_grad_rank{rank}.npy", grad_out)
+
+
+def test_parallel_ffn():
+    np.random.seed(42)
+    batch, input_dim, hidden_dim, output_dim = 16, 128, 64, 32
+    w1, w2 = np.random.rand(input_dim, hidden_dim), np.random.rand(hidden_dim, output_dim)
+    data = np.random.rand(batch, input_dim)
+    grad = np.random.rand(batch, output_dim)
+
+    l1, l2 = Linear(w1), Linear(w2)
+    output = l2.forward(l1.forward(data))
+    grad_out = l1.backward(l2.backward(grad))
+    np.save("ffn_output.npy", output)
+    np.save("ffn_data_grad.npy", grad_out)
+
+    world_size = 4
+    mpi_frame(parallel_ffn, world_size=world_size)
+    check_output(prefix="ffn_output")
+    check_grad(prefix="ffn_data_grad")
+
+
 if __name__ == "__main__":
     print("Test linear layer with column parallelism...")
     test_col_linear()
 
     print("\n\nTest linear layer with row parallelism...")
     test_row_linear()
+
+    print("\n\nTest parallel FFN layer...")
+    test_parallel_ffn()
