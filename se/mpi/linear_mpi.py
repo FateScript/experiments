@@ -38,6 +38,9 @@ class Linear:
             y += self.bias
         return y
 
+    def __call__(self, x):
+        return self.forward(x)
+
     def backward(self, grad):
         # y = x * w + b
 
@@ -153,9 +156,12 @@ class ParallelFFN:
         self.linear2 = RowParallelLinear(weights=w2_parallel, input_is_parallel=True)
 
     def forward(self, x):
-        x = self.linear1.forward(x)
-        x = self.linear2.forward(x)
+        x = self.linear1(x)
+        x = self.linear2(x)
         return x
+
+    def __call__(self, x):
+        return self.forward(x)
 
     def backward(self, grad):
         l2_grad = self.linear2.backward(grad)
@@ -173,7 +179,7 @@ def linear_step():
     w = np.random.rand(input_dim, output_dim)
     data = np.random.rand(batch_size, input_dim)
     linear = Linear(weights=w)
-    output = linear.forward(data)
+    output = linear(data)
     grad_output = np.random.rand(*output.shape)
     data_grad = linear.backward(grad_output)
     linear.step_grad(lr)
@@ -198,7 +204,7 @@ def col_linear(rank, world_size, queue, signal_queue, pipe_pairs):
     print(f"rank {rank} w_parallel shape: {w_parallel.shape}")
     linear = ColumnParallelLinear(weights=w_parallel, gather_output=True)
 
-    output = linear.forward(data)
+    output = linear(data)
     grad_output = np.random.rand(*output.shape)
     data_grad = linear.backward(grad_output)
     linear.step_grad(lr)
@@ -223,7 +229,7 @@ def row_linear(rank, world_size, queue, signal_queue, pipe_pairs):
     print(f"rank {rank} w_parallel shape: {w_parallel.shape}")
     linear = RowParallelLinear(weights=w_parallel)
 
-    output = linear.forward(data)
+    output = linear(data)
     grad_output = np.random.rand(*output.shape)
     data_grad = linear.backward(grad_output)
     linear.step_grad(lr)
@@ -304,7 +310,7 @@ def parallel_ffn(rank, world_size, queue, signal_queue, pipe_pairs):
     grad = np.random.rand(batch, output_dim)
 
     model = ParallelFFN(w1, w2)
-    output = model.forward(data)
+    output = model(data)
     grad_out = model.backward(grad)
     np.save(f"ffn_output_rank{rank}.npy", output)
     np.save(f"ffn_data_grad_rank{rank}.npy", grad_out)
@@ -318,7 +324,7 @@ def test_parallel_ffn():
     grad = np.random.rand(batch, output_dim)
 
     l1, l2 = Linear(w1), Linear(w2)
-    output = l2.forward(l1.forward(data))
+    output = l2(l1(data))
     grad_out = l1.backward(l2.backward(grad))
     np.save("ffn_output.npy", output)
     np.save("ffn_data_grad.npy", grad_out)

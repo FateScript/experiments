@@ -131,6 +131,6 @@ def test_kv_cache():
 
 
 if __name__ == "__main__":
-    torch.manual_seed(42)
-    # save_input_output()
+    torch.manual_seed(3)
+    save_input_output()
     test_kv_cache()

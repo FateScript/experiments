@@ -8,6 +8,8 @@ import numpy as np
 from mpi import (  # isort:skip
     all_to_all_array,
     auto_split,
+    all_reduce,
+    get_world_size,
     init_env,
     mpi_frame,
 )
@@ -20,6 +22,14 @@ def softmax(x, axis=-1):
 
 def linear_transform(x, weight):
     return np.dot(x, weight.transpose())
+
+
+def split_heads(x, num_heads: int):
+    batch, seq, dim = x.shape
+    tensor_dim = dim // num_heads
+    x = x.reshape(batch, seq, num_heads, tensor_dim)
+    x = np.swapaxes(x, 1, 2)  # (batch, num_heads, seq_len, tensor_dim)
+    return x
 
 
 class ScaledDotProductAttn:
@@ -64,17 +74,11 @@ class MultiHeadAttn:
         k = linear_transform(x, self.k_proj)
         v = linear_transform(x, self.v_proj)
 
-        q, k, v = self.split_heads(q), self.split_heads(k), self.split_heads(v)
+        h = self.num_heads
+        q, k, v = split_heads(q, h), split_heads(k, h), split_heads(v, h)
         out = self.attn(q, k, v, mask=mask)
         out = np.swapaxes(out, 1, 2).reshape(batch, seq, dim)
         return linear_transform(out, self.out_proj)
-
-    def split_heads(self, x):
-        batch, seq, dim = x.shape
-        tensor_dim = dim // self.num_heads
-        x = x.reshape(batch, seq, self.num_heads, tensor_dim)
-        x = np.swapaxes(x, 1, 2)  # (batch, num_heads, seq_len, tensor_dim)
-        return x
 
 
 def mha_load_state_dict(module, state_dict):
@@ -111,7 +115,7 @@ class SequenceParallelMHA:
     Paper: https://arxiv.org/pdf/2309.14509
 
     The num of heads should be divivied by num parallel.
-    For example, if num_heads=4, num_parallel=2, then each parallel will handle 2 heads.
+    For example, if num_heads=4, num_parallel=2, then each device will handle 2 heads.
     """
 
     def __init__(self, q_proj, k_proj, v_proj, out_proj, num_heads: int):
@@ -129,7 +133,8 @@ class SequenceParallelMHA:
         k = linear_transform(x, self.k_proj)
         v = linear_transform(x, self.v_proj)
 
-        q, k, v = self.split_heads(q), self.split_heads(k), self.split_heads(v)
+        h = self.num_heads
+        q, k, v = split_heads(q, h), split_heads(k, h), split_heads(v, h)
 
         # NOTE: q, k, v are splited in head dimension.
         # The first version I implemented in commit `6ef066864d6d` split tensor in last dimension,
@@ -144,18 +149,47 @@ class SequenceParallelMHA:
         out = np.swapaxes(out, 1, 2).reshape(batch, -1, dim)
         return linear_transform(out, self.out_proj)
 
-    def split_heads(self, x):
-        # The same as MultiHeadAttn.split_heads
-        batch, seq, dim = x.shape
-        tensor_dim = dim // self.num_heads
-        x = x.reshape(batch, seq, self.num_heads, tensor_dim)
-        x = np.swapaxes(x, 1, 2)  # (batch, num_heads, seq_len, tensor_dim)
-        return x
+
+class TensorParallelMHA:
+    """
+    A megatron tensor parallel version of MultiHeadAttn.
+    Paper: https://arxiv.org/pdf/2205.05198
+
+    The num of heads should be divivied by num parallel.
+    For example, if num_heads=4, num_parallel=2, then each devices will handle 2 heads.
+    """
+
+    def __init__(self, q_proj, k_proj, v_proj, out_proj, num_heads: int, reduce_output=True):
+        self.q_proj = auto_split(q_proj, axis=0)  # actually, it's a column parallel
+        self.k_proj = auto_split(k_proj, axis=0)
+        self.v_proj = auto_split(v_proj, axis=0)
+        self.out_proj = auto_split(out_proj, axis=-1)  # actually, it's a row parallel
+        self.num_heads = num_heads
+        world_size = get_world_size()
+        assert num_heads % world_size == 0, "num_heads should be divisible by num_parallel"
+        self.local_heads = num_heads // get_world_size()
+        self.attn = ScaledDotProductAttn()
+        self.reduce_output = reduce_output
+
+    def __call__(self, x, mask=None):
+        batch, seq, _ = x.shape
+        q = linear_transform(x, self.q_proj)
+        k = linear_transform(x, self.k_proj)
+        v = linear_transform(x, self.v_proj)
+
+        h = self.local_heads
+        q, k, v = split_heads(q, h), split_heads(k, h), split_heads(v, h)
+
+        out = self.attn(q, k, v, mask=mask)
+
+        out = np.swapaxes(out, 1, 2).reshape(batch, seq, -1)
+        out = linear_transform(out, self.out_proj)
+        if self.reduce_output:
+            out = all_reduce(out, op="sum")
+        return out
 
 
-def seq_mha_forward(rank, world_size, queue, signal_queue, pipe_pairs):
-    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
-
+def load_from_file():
     load_file = "mha_input_output.pkl"
     if not os.path.exists(load_file):
         print(f"File {load_file} not found. Please use nn/module/mha.py to generate it.")
@@ -168,7 +202,15 @@ def seq_mha_forward(rank, world_size, queue, signal_queue, pipe_pairs):
     k_proj = state_dict["k_proj.weight"].numpy()
     v_proj = state_dict["v_proj.weight"].numpy()
     out_proj = state_dict["out_proj.weight"].numpy()
+    input_data = data_dict["input"].detach().numpy()
+    output_data = data_dict["output"].detach().numpy()
+    return q_proj, k_proj, v_proj, out_proj, input_data, output_data
 
+
+def seq_mha_forward(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+
+    q_proj, k_proj, v_proj, out_proj, input_data, output_data = load_from_file()
     mha = SequenceParallelMHA(
         q_proj=q_proj,
         k_proj=k_proj,
@@ -177,8 +219,6 @@ def seq_mha_forward(rank, world_size, queue, signal_queue, pipe_pairs):
         num_heads=4,
     )
 
-    input_data = data_dict["input"].detach().numpy()
-    output_data = data_dict["output"].detach().numpy()
     output_data = auto_split(output_data, axis=1)
 
     output = mha(input_data)
@@ -194,6 +234,34 @@ def check_seq_parallel_mha():
         print()
 
 
+def tensor_mha_forward(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+
+    q_proj, k_proj, v_proj, out_proj, input_data, output_data = load_from_file()
+    mha = TensorParallelMHA(
+        q_proj=q_proj,
+        k_proj=k_proj,
+        v_proj=v_proj,
+        out_proj=out_proj,
+        num_heads=4,
+        reduce_output=False,
+    )
+
+    output = mha(input_data)
+    output = all_reduce(output, op="sum")
+    match = np.allclose(output_data, output, atol=1e-7)
+    result = "passed" if match else "failed"
+    print(f"Check Tensor Parallel MHA forward at rank {rank}: {result}")
+
+
+def check_tensor_parallel_mha():
+    for world_size in [2, 4]:  # num parallel should be divisible by num_heads
+        print(f"\nCheck Tensor Parallel MHA with world size {world_size}")
+        mpi_frame(tensor_mha_forward, world_size=world_size)
+        print()
+
+
 if __name__ == "__main__":
     check_np_mha()
     check_seq_parallel_mha()
+    check_tensor_parallel_mha()
