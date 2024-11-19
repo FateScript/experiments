@@ -432,15 +432,16 @@ def all_to_all_array(data: np.array, split_axis: int = -1, concat_axis: int = No
     return np.concatenate(trans_data, axis=concat_axis)
 
 
-def all_gather_naive(data):
+def all_gather_naive(data, concat: bool = True, axis: int = -1):
     """All gather = Gather + Broadcast"""
     data = gather(data)
-    # barrier()
+    if concat:
+        data = concat_data(data, axis=axis)
     data = broadcast(data)
     return data
 
 
-def all_gather(data, concat: bool = True):
+def all_gather(data, concat: bool = True, axis: int = -1):
     # reference in gloo:
     # https://github.com/facebookincubator/gloo/blob/81925d1c674c34f0dc34dd9a0f2151c1b6f701eb/gloo/allgather.cc#L19
     rank, world_size = get_rank(), get_world_size()
@@ -458,7 +459,7 @@ def all_gather(data, concat: bool = True):
         data_list[send_idx] = recv_data  # the recv data is the send data in the next round
 
     if concat:
-        return concat_data(data_list)
+        return concat_data(data_list, axis=axis)
     return data_list
 
 

@@ -160,6 +160,7 @@ class TensorParallelMHA:
     """
 
     def __init__(self, q_proj, k_proj, v_proj, out_proj, num_heads: int, reduce_output=True):
+        # NOTE: for two paralleled Linear, it should always be column parallel + row parallel.
         self.q_proj = auto_split(q_proj, axis=0)  # actually, it's a column parallel
         self.k_proj = auto_split(k_proj, axis=0)
         self.v_proj = auto_split(v_proj, axis=0)
