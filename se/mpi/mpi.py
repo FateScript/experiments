@@ -432,7 +432,7 @@ def all_to_all_array(data: np.array, split_axis: int = -1, concat_axis: int = No
     return np.concatenate(trans_data, axis=concat_axis)
 
 
-def all_gather_naive(data, concat: bool = True, axis: int = -1):
+def all_gather_naive(data, concat: bool = False, axis: int = -1):
     """All gather = Gather + Broadcast"""
     data = gather(data)
     if concat:
@@ -463,9 +463,12 @@ def all_gather(data, concat: bool = True, axis: int = -1):
     return data_list
 
 
-def reduce_scatter(data, op: str = "sum"):
+def reduce_scatter(data, op: str = "sum", slice: bool = False):
     rank = get_rank()
     world_size = get_world_size()
+    if world_size == 1:
+        return [data] if slice else data
+
     recv_rank, to_rank = (rank - 1) % world_size, (rank + 1) % world_size  # recv from left, send to right  # noqa
     pipes = get_pipes()
     chunk_size = math.ceil(len(data) / world_size)
@@ -486,6 +489,12 @@ def reduce_scatter(data, op: str = "sum"):
     if op == "mean":
         data = elementwise_div(data, world_size)
 
+    if slice:
+        send_data = data[to_rank * chunk_size: (to_rank + 1) * chunk_size]
+        # the last round, just recv the data from the left
+        pipes[(rank, to_rank)].send(send_data)
+        ground_data = pipes[(rank, recv_rank)].recv()
+        return ground_data
     return data
 
 
@@ -600,6 +609,8 @@ def mpi_frame(f, world_size: int = 4):
 
 def test_barrier(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest barrier")
+    barrier()
 
     time.sleep(0.01 * rank)
     print(f"rank{rank} enter func")
@@ -615,6 +626,9 @@ def test_barrier(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_broadcast(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest broadcast")
+    barrier()
+
     source_rank = 1
 
     data = [10 * x for x in range(world_size)] if rank == source_rank else None
@@ -629,8 +643,28 @@ def test_broadcast(rank, world_size, queue, signal_queue, pipe_pairs):
     print(f"Rank {rank} data: {data}")
 
 
+def test_reduce_scatter(rank, world_size, queue, signal_queue, pipe_pairs):
+    init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest reduce scatter")
+    barrier()
+
+    data = [rank * 10 + x for x in range(world_size * 2)]
+
+    time.sleep(0.0001 * rank)
+    print(f"Previous rank{rank} data: {data}")
+    time.sleep(0.01)
+
+    data = reduce_scatter(data, op="sum", slice=True)
+
+    time.sleep(0.01 * rank)
+    print(f"Rank {rank} data: {data}")
+
+
 def test_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest reduce")
+    barrier()
+
     source_rank = 0
 
     data = [rank * 10 + x for x in range(world_size * 2)]
@@ -647,6 +681,9 @@ def test_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_reduce_naive(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest navie reduce")
+    barrier()
+
     source_rank = 0
 
     data = rank * 10
@@ -663,6 +700,9 @@ def test_reduce_naive(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_scatter(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest scatter")
+    barrier()
+
     source_rank = 0
     data = [10 * x for x in range(world_size)] if rank == source_rank else None
 
@@ -678,6 +718,9 @@ def test_scatter(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_all_gather_naive(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest naive all gather")
+    barrier()
+
     data = rank * 10
 
     time.sleep(0.0001 * rank)
@@ -692,6 +735,9 @@ def test_all_gather_naive(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_all_gather(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest all gather")
+    barrier()
+
     # data = [rank * 10 + x for x in range(world_size)]
     # if rank == 0:
     #     data = [0] + data
@@ -709,6 +755,9 @@ def test_all_gather(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest all reduce")
+    barrier()
+
     data = rank * 10
 
     time.sleep(0.0001 * rank)
@@ -723,6 +772,9 @@ def test_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_ring_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest ring all reduce")
+    barrier()
+
     data = [rank * 10 + x for x in range(world_size * 2)] + [1]
 
     time.sleep(0.0001 * rank)
@@ -737,6 +789,9 @@ def test_ring_all_reduce(rank, world_size, queue, signal_queue, pipe_pairs):
 
 def test_all_to_all(rank, world_size, queue, signal_queue, pipe_pairs):
     init_env(rank, world_size, queue, signal_queue, pipe_pairs)
+    log_rank("\nTest all to all")
+    barrier()
+
     data = [rank * 10 + x for x in range(world_size * 2)]
 
     time.sleep(0.1 * rank)
@@ -755,6 +810,7 @@ if __name__ == "__main__":
     mpi_frame(test_broadcast, world_size=world_size)
     mpi_frame(test_reduce_naive, world_size=world_size)
     mpi_frame(test_reduce, world_size=world_size)
+    mpi_frame(test_reduce_scatter, world_size=world_size)
     mpi_frame(test_scatter, world_size=world_size)
     mpi_frame(test_all_gather_naive, world_size=world_size)
     mpi_frame(test_all_gather, world_size=world_size)

@@ -9,7 +9,6 @@ import numpy as np
 from mpi import (  # isort:skip
     all_gather,
     auto_split,
-    barrier,
     log_rank,
     reduce_scatter,
     init_env,
@@ -48,14 +47,20 @@ class SeqParallelBlock:
         self.ffn = ParallelFFN(ffn_w1, ffn_w2)
 
     def __call__(self, x):
-        # TODO: fix all gather hang issue
+        # NOTE: dropout modules in figure 5 are not implemented in this snippet
+        residual = x
         x = self.ln1(x)  # sequence parallel layernorm
-        barrier()
-        x = all_gather(x, axis=1)  # gather along sequence length
+        x = all_gather(x, axis=1)  # g function in figure 5, gather along sequence length
         x = self.mha(x)  # tensor parallel MHA
 
-        x = reduce_scatter(x)
+        x = auto_split(x, axis=1, rank_only=False)  # split along sequence length
+        x = reduce_scatter(x, slice=True)[0]  # g bar function in figure 5
+        x += residual
+
+        residual = x
         x = self.ln2(x)  # sequence parallel layernorm
+        x = self.ffn(x)
+        x += residual
         return x
 
 
