@@ -2,8 +2,8 @@
 
 # reference: https://github.com/karpathy/nanoGPT/blob/master/transformer_sizing.ipynb
 
-from typing import Dict
 from collections import OrderedDict
+from typing import Dict
 
 
 def embedding_params(embed_dim, vocab_size, sequence_length=None, rope: bool = False) -> Dict:
@@ -24,7 +24,7 @@ def attn_params(embed_dim, num_heads, attn_type, groups=None) -> Dict:
     assert attn_type in ["mha", "mqa", "gqa"]
 
     out = OrderedDict()
-    out['attention/norm'] = embed_dim  # bias=False if LN
+    out['attention/norm'] = embed_dim  # suppose that bias is False if LayerNorm
 
     if attn_type == "mha":
         out['attention/kqv'] = embed_dim * (3 * embed_dim)
@@ -128,11 +128,49 @@ def attn_flops(embed_dim, num_heads, sequence_length, attn_type="mha", groups=No
     out['attention/kqv'] = 2 * sequence_length * kqv_numel
 
     # 2) calculating the attention scores
+    # (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
     out['attention/scores'] = 2 * sequence_length * sequence_length * embed_dim
-    # 3) the reduction of the values (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+    # 3) the reduction of the values
+    # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
     out['attention/reduce'] = 2 * num_heads * (sequence_length * sequence_length * head_size)
     # 4) the final linear projection
     out['attention/proj'] = 2 * sequence_length * (embed_dim * embed_dim)
+    out['attention'] = sum(out['attention/'+k] for k in ['kqv', 'scores', 'reduce', 'proj'])
+    return out
+
+
+def kv_cache_attn_flops(embed_dim, num_heads, sequence_length, attn_type="mha", groups=None):
+    assert attn_type in ["mha", "mqa", "gqa"]
+
+    out = OrderedDict()
+    head_size = embed_dim // num_heads
+
+    if attn_type == "mha":
+        kv_dim = embed_dim
+    else:
+        if attn_type == "gqa":
+            assert groups is not None, f"groups must be provided for gqa, got {groups}"
+        else:
+            groups = 1
+        kv_dim = head_size * groups
+
+    kqv_numel = embed_dim * embed_dim + 2 * embed_dim * kv_dim
+
+    # 1) the projection to key, query, values
+    # 1/seq of normal attn/kqv
+    out['attention/kqv'] = 2 * 1 * kqv_numel
+
+    # 2) calculating the attention scores
+    # (B, nh, 1, hs) x (B, nh, hs, T) -> (B, nh, 1, T)
+    # 1/seq of normal attn/scores
+    out['attention/scores'] = 2 * 1 * sequence_length * embed_dim
+    # 3) the reduction of the values
+    # (B, nh, 1, T) x (B, nh, T, hs) -> (B, nh, 1, hs)
+    # 1/seq of normal attn/reduce
+    out['attention/reduce'] = 2 * num_heads * 1 * sequence_length * head_size
+    # 4) the final linear projection
+    # 1/seq of normal attn/proj
+    out['attention/proj'] = 2 * 1 * (embed_dim * embed_dim)
     out['attention'] = sum(out['attention/'+k] for k in ['kqv', 'scores', 'reduce', 'proj'])
     return out
 
@@ -176,6 +214,40 @@ def flops(
     out['dense'] = 2 * sequence_length * (embed_dim * vocab_size)
 
     # forward,backward,total
+    out['forward_total'] = out['transformer'] + out['dense']
+    out['backward_total'] = 2 * out['forward_total']  # use common estimate of bwd = 2*fwd
+    out['total'] = out['forward_total'] + out['backward_total']
+
+    return out
+
+
+def kv_cache_flops(
+    sequence_length,
+    vocab_size,
+    num_layers,
+    num_heads,
+    embed_dim,
+    ffw_size=None,
+    attn_type="mha",
+    groups=None,
+):
+    out = OrderedDict()
+
+    flops_out = kv_cache_attn_flops(
+        embed_dim, num_heads, sequence_length,
+        attn_type=attn_type, groups=groups,
+    )
+    out.update(**flops_out)
+
+    flops_out = mlp_flops(embed_dim, 1, ffw_size)
+    out.update(**flops_out)
+
+    # the transformer and the rest of it
+    out['block'] = out['attention'] + out['mlp']
+    out['transformer'] = num_layers * out['block']
+    out['dense'] = 2 * 1 * (embed_dim * vocab_size)
+
+    # forward, backward, total
     out['forward_total'] = out['transformer'] + out['dense']
     out['backward_total'] = 2 * out['forward_total']  # use common estimate of bwd = 2*fwd
     out['total'] = out['forward_total'] + out['backward_total']
@@ -354,7 +426,7 @@ def qwen_configs() -> Dict:
     return CONFIGS
 
 
-def main(model_name: str = "QWEN2.5-14B"):
+def param_and_flops(model_name: str = "QWEN2.5-14B"):
     CONFIGS = qwen_configs()
     kwargs = CONFIGS[model_name]
     kwargs["sequence_length"] = 4 * 1024  # 4k sequence length
@@ -380,5 +452,64 @@ def main(model_name: str = "QWEN2.5-14B"):
         print("--" * 30)
 
 
+def prefill_decode(
+    model_name: str = "QWEN2.5-14B",
+    start_seq_len: int = 2048,
+    max_gen_len: int = 32,
+):
+    CONFIGS = qwen_configs()
+    kwargs = CONFIGS[model_name]
+    for k in ["rope", "tie_weight"]:
+        kwargs.pop(k)
+    kwargs["sequence_length"] = start_seq_len
+
+    print(f"Model: {model_name}")
+    for arg_k, arg_v in kwargs.items():
+        print(f"{arg_k}: {arg_v}")
+    print("--" * 30)
+
+    info_table = {}
+    print("Prefill stage")
+    prefill_flops = flops(**kwargs)["total"]
+    info_table["prefill"] = prefill_flops
+
+    print("Decode stage")
+    for idx in range(1, max_gen_len + 1):
+        kwargs["sequence_length"] += 1
+        decode_flops = kv_cache_flops(**kwargs)["total"]
+        info_table[f"decode_{idx}"] = decode_flops
+        normal_flops = flops(**kwargs)["total"]
+        # kv-cache flops * seq_len equasl normal flops
+        assert decode_flops * kwargs["sequence_length"] == normal_flops
+
+    for k, v in info_table.items():
+        idx = -1 if "decode" not in k else int(k.split("_")[-1])
+        if idx >= 2:
+            prev_flops = info_table[f"decode_{idx-1}"]
+            inc_flops = v - prev_flops
+        else:
+            inc_flops = "nan"
+        print(f"{k:10s} {v:,d}  inc_flops: {inc_flops}")
+
+    flops_sum = sum(v for v in info_table.values())
+    direct_flops = flops(**kwargs)["total"]
+    triangle_cnt = max_gen_len * (max_gen_len - 1) // 2  # 0 + 1 + 2 + ... + (max_gen_len - 1)
+    saved_flops_cnt = triangle_cnt + start_seq_len * max_gen_len  # saved flops for each decode
+    estimate_diff = inc_flops * saved_flops_cnt
+    flops_diff = direct_flops - flops_sum
+    flops_info = {
+        "flops_sum": flops_sum,
+        "direct_flops": direct_flops,
+        "flops_diff": flops_diff,
+        "estimate_diff": estimate_diff,
+    }
+    for k, v in flops_info.items():
+        print(f"{k:15s} {v:,d}")
+
+
 if __name__ == "__main__":
-    main()
+    import fire
+    fire.Fire({
+        "param_flops": param_and_flops,
+        "pd": prefill_decode,
+    })
