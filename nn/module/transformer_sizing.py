@@ -429,6 +429,18 @@ def qwen_configs() -> Dict:
 def param_and_flops(model_name: str = "QWEN2.5-14B"):
     CONFIGS = qwen_configs()
     kwargs = CONFIGS[model_name]
+    print(f"Model: {model_name}")
+    for arg_k, arg_v in kwargs.items():
+        print(f"{arg_k:15s} {arg_v}")
+    print("--" * 30)
+
+    simple_display(**kwargs)
+    print("--" * 30)
+
+
+def param_and_flops_up(model_name: str = "QWEN2.5-14B"):
+    CONFIGS = qwen_configs()
+    kwargs = CONFIGS[model_name]
     kwargs["sequence_length"] = 4 * 1024  # 4k sequence length
 
     base_value = {
@@ -441,7 +453,7 @@ def param_and_flops(model_name: str = "QWEN2.5-14B"):
     }
     print(f"Model: {model_name}")
     for arg_k, arg_v in kwargs.items():
-        print(f"{arg_k}: {arg_v}")
+        print(f"{arg_k:15s} {arg_v}")
     print("--" * 30)
 
     # simple_display(**kwargs)
@@ -450,6 +462,17 @@ def param_and_flops(model_name: str = "QWEN2.5-14B"):
         update_kwargs[k] = v
         flops_params_diff(up_keyname=k, **update_kwargs)
         print("--" * 30)
+
+
+def prefill_decode_ratio(flops_dict: Dict[str, int]):
+    # prefill is compute-bound while decode is io-bound
+    # if prefill_token: generate token equals 1: 1, the flops ratio is nearly 1: 1
+    prefill_flops = flops_dict["prefill"]
+    decode_flops = sum(v for k, v in flops_dict.items() if k.startswith("decode_"))
+    sum_flops = prefill_flops + decode_flops
+    prefill_ratio, decode_ratio = prefill_flops / sum_flops, decode_flops / sum_flops
+    print(f"prefill   {prefill_flops:,d}, ratio: {prefill_ratio:.2%}")
+    print(f"decode    {decode_flops:,d}, ratio: {decode_ratio:.2%}")
 
 
 def prefill_decode(
@@ -465,7 +488,7 @@ def prefill_decode(
 
     print(f"Model: {model_name}")
     for arg_k, arg_v in kwargs.items():
-        print(f"{arg_k}: {arg_v}")
+        print(f"{arg_k:15s} {arg_v}")
     print("--" * 30)
 
     info_table = {}
@@ -483,14 +506,20 @@ def prefill_decode(
         assert decode_flops * kwargs["sequence_length"] == normal_flops
 
     for k, v in info_table.items():
-        idx = -1 if "decode" not in k else int(k.split("_")[-1])
+        idx = -1 if "decode_" not in k else int(k.split("_")[-1])
         if idx >= 2:
             prev_flops = info_table[f"decode_{idx-1}"]
             inc_flops = v - prev_flops
         else:
             inc_flops = "nan"
         print(f"{k:10s} {v:,d}  inc_flops: {inc_flops}")
+    print("--" * 30)
+    prefill_decode_ratio(info_table)
+    print("--" * 30)
 
+    if max_gen_len < 2:
+        return
+    inc_flops = info_table["decode_2"] - info_table["decode_1"]
     flops_sum = sum(v for v in info_table.values())
     direct_flops = flops(**kwargs)["total"]
     triangle_cnt = max_gen_len * (max_gen_len - 1) // 2  # 0 + 1 + 2 + ... + (max_gen_len - 1)
@@ -511,5 +540,6 @@ if __name__ == "__main__":
     import fire
     fire.Fire({
         "param_flops": param_and_flops,
+        "param_flops_up": param_and_flops_up,
         "pd": prefill_decode,
     })
