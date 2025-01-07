@@ -4,7 +4,7 @@ import itertools
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pytools.functional import compose, curry
+from pytoolzen.functional import compose, curry
 
 __all__ = [
     "Functor", "Maybe", "Either", "Left", "Right",

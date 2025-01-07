@@ -133,6 +133,9 @@ def attn_flops(embed_dim, num_heads, sequence_length, attn_type="mha", groups=No
     # 3) the reduction of the values
     # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
     out['attention/reduce'] = 2 * num_heads * (sequence_length * sequence_length * head_size)
+    # since num_heads * head_size equals embed_dim, the above can be simplified as below
+    # 2 * sequence_length * sequence_length * embed_dim
+
     # 4) the final linear projection
     out['attention/proj'] = 2 * sequence_length * (embed_dim * embed_dim)
     out['attention'] = sum(out['attention/'+k] for k in ['kqv', 'scores', 'reduce', 'proj'])
