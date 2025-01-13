@@ -10,7 +10,8 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, pipeline
 
 
 def generate(text: str, temperature: float = 0.01, max_new_tokens: int = 8) -> str:
-    generator = pipeline('text-generation', model='gpt2', temperature=temperature)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    generator = pipeline('text-generation', model='gpt2', temperature=temperature, device=device)
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     pad_token = tokenizer.eos_token_id
 
