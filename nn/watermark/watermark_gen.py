@@ -8,10 +8,12 @@
 # reference paper: A Watermark for Large Language Models
 # https://arxiv.org/abs/2301.10226
 
+import functools
 import math
-import torch
-from transformers import GPT2Tokenizer, GPT2LMHeadModel
 from typing import List
+
+import torch
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
 
 class GPT2Watermark:
@@ -139,10 +141,22 @@ class WatermarkDetector:
         std = math.sqrt(expect_token_count * (1 - self.greenlist_ratio))
         return (green_token_count - expect_token_count) / std
 
-    def detect(self, text) -> bool:
+    def compute_p_value(self, z_score) -> float:
+        return 0.5 * (1 + math.erf(z_score / math.sqrt(2)))
+
+    @functools.lru_cache(maxsize=128)
+    def text_z_score(self, text) -> float:
         input_seq = self.tokenizer(text, return_tensors="pt").input_ids
         token_statistics = self.n_gram_stats(input_seq)
         z_score = self.compute_z_score(token_statistics)
+        return z_score
+
+    def prob(self, text) -> float:
+        z_score = self.text_z_score(text)
+        return self.compute_p_value(z_score)
+
+    def detect(self, text) -> bool:
+        z_score = self.text_z_score(text)
         return z_score >= self.z_threshold
 
 
@@ -153,13 +167,15 @@ def watermark_and_detect(text: str, seed: int = 42):
 
     simple_text = watermark_model.generate(text, watermark=False)
     simple_detect_result = detector.detect(simple_text)
+    prob = detector.prob(simple_text)
     print(f"normal text: {simple_text}\n")
-    print(f"Detection result: {simple_detect_result}\n\n")
+    print(f"Detection result: {simple_detect_result}, prob: {prob}\n\n")
 
     watermarked_text = watermark_model.generate(text)
     watermark_detect_result = detector.detect(watermarked_text)
+    prob = detector.prob(watermarked_text)
     print(f"watermarked text: {watermarked_text}\n")
-    print(f"Detection result: {watermark_detect_result}")
+    print(f"Detection result: {watermark_detect_result}, prob: {prob}")
 
 
 if __name__ == "__main__":
