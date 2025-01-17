@@ -2,6 +2,7 @@
 
 import math
 import pickle
+from typing import List
 
 import torch
 from torch import nn
@@ -33,6 +34,18 @@ def split_heads(x, num_heads: int):
     # transpose to (batch, num_heads, seq_len, tensor_dim)
     x = x.transpose(1, 2)
     return x
+
+
+def varlen_mask(seq_len: int, samples_length: List[int]):
+    assert sum(samples_length) <= seq_len
+    mask_matrix = torch.zeros(seq_len, seq_len)
+    start_idx = 0
+    for sample_len in samples_length:
+        end_idx = start_idx + sample_len
+        tril_matrix = torch.tril(torch.ones(sample_len, sample_len))
+        mask_matrix[start_idx:end_idx, start_idx:end_idx] = tril_matrix
+        start_idx = end_idx
+    return mask_matrix
 
 
 class MultiHeadAttn(nn.Module):
