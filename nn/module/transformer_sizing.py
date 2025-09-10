@@ -322,7 +322,11 @@ def simple_display(
     flops_total = flops_details['total']
     print(f"{'name':20s} {'flops':14s} {'ratio (%)':10s}")
     for k, v in flops_details.items():
-        print(f"{k:20s} {v:14d} {v/flops_ffd*100:10.4f}")
+        suffix = ""
+        # any(x in k for x in ("mlp", "attention"))
+        if k in ("mlp", "attention"):
+            suffix = f"{(v * num_layers) / flops_ffd * 100:10.4f}%"
+        print(f"{k:20s} {v:14d} {v/flops_ffd*100:10.4f} {suffix}")
 
     print("--" * 30)
 
@@ -382,9 +386,9 @@ def flops_params_diff(
         )
 
 
-def qwen_configs() -> Dict:
+def qwen_configs(sequence_length: int = 131072) -> Dict:
     QWEN_BASE = dict(
-        sequence_length=131072,
+        sequence_length=sequence_length,
         vocab_size=152064,
         attn_type="gqa",
         rope=True,
@@ -402,20 +406,20 @@ def qwen_configs() -> Dict:
         # https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/main/config.json
         "QWEN2.5-0.5B": dict(
             num_layers=24, num_heads=14, embed_dim=896, groups=2, ffw_size=4864,
-            attn_type="gqa", rope=True,
-            sequence_length=32768, vocab_size=151936, tie_weight=True,  # diff from base
+            attn_type="gqa", rope=True, sequence_length=sequence_length,
+            vocab_size=151936, tie_weight=True,  # diff from base
         ),
         # qwen2.5 coder 1.5B config: https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B/blob/main/config.json
         "QWEN2.5-1.5B": dict(
             num_layers=28, num_heads=12, embed_dim=1536, groups=2, ffw_size=8960,
-            attn_type="gqa", rope=True,
-            sequence_length=32768, vocab_size=151936, tie_weight=True,  # diff from base
+            attn_type="gqa", rope=True, sequence_length=sequence_length,
+            vocab_size=151936, tie_weight=True,  # diff from base
         ),
         # https://huggingface.co/Qwen/Qwen2.5-3B/blob/main/config.json
         "QWEN2.5-3B": dict(
             num_layers=36, num_heads=16, embed_dim=2048, groups=4, ffw_size=11008,
-            attn_type="gqa", rope=True,
-            sequence_length=32768, vocab_size=151936, tie_weight=True,  # diff from base
+            attn_type="gqa", rope=True, sequence_length=sequence_length,
+            vocab_size=151936, tie_weight=True,  # diff from base
         ),
         # https://huggingface.co/Qwen/Qwen2.5-14B/blob/main/config.json
         "QWEN2.5-14B": dict(
@@ -429,8 +433,8 @@ def qwen_configs() -> Dict:
     return CONFIGS
 
 
-def param_and_flops(model_name: str = "QWEN2.5-14B"):
-    CONFIGS = qwen_configs()
+def param_and_flops(model_name: str = "QWEN2.5-14B", sequence_length: int = 131072):
+    CONFIGS = qwen_configs(sequence_length=sequence_length)
     kwargs = CONFIGS[model_name]
     print(f"Model: {model_name}")
     for arg_k, arg_v in kwargs.items():
