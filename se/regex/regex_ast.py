@@ -13,7 +13,6 @@ __all__ = [
     "node_to_state",
     "regex_to_states",
     "replace_success_state",
-    "reset_state",
 ]
 
 
@@ -171,9 +170,6 @@ class State:
         state.next_states = [next_state]
         return state
 
-    def reset(self):
-        pass  # default do nothing
-
     def to_trace(self):
         state_copy = deepcopy(self)
         state_copy.next_states = None
@@ -246,9 +242,6 @@ class Countable(State):
             state.next_states.append(deep_state)
         return state
 
-    def reset(self):
-        self.count = 0
-
     def to_trace(self):
         trace = super().to_trace()
         trace.out_loop_states = None
@@ -308,17 +301,6 @@ def replace_success_state(state: State, new_state: State):
             new_list.append(replace_success_state(s, new_state))
     state.next_states = new_list
     return state
-
-
-def reset_state(state: State, visited=None):
-    if visited is None:
-        visited = set()
-
-    visited.add(id(state))
-    state.reset()
-    for s in state.next_states:
-        if id(s) not in visited:
-            reset_state(s, visited=visited)
 
 
 if __name__ == "__main__":
