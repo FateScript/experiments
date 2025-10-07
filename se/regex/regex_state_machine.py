@@ -16,7 +16,6 @@ class StatesMachine:
             self.trace_tree = []
 
     def reset_state(self):
-        # reset_state(self.start_node)  # deepcopy make it useless
         self.candidate_states = []
 
     def reach_success_state(self) -> bool:
